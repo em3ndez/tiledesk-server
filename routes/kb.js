@@ -1,0 +1,2320 @@
+var express = require('express');
+var router = express.Router();
+var winston = require('../config/winston');
+var multer = require('multer')
+var upload = multer()
+const path = require('path');
+const JobManager = require('../utils/jobs-worker-queue-manager/JobManagerV2');
+var configGlobal = require('../config/global');
+var mongoose = require('mongoose');
+var parsecsv = require("fast-csv");
+
+var { Namespace, KB } = require('../models/kb_setting');
+const faq = require('../models/faq');
+const faq_kb = require('../models/faq_kb');
+
+const { MODELS_MULTIPLIER } = require('../utils/aiUtils');
+const { parseStringArrayField } = require('../utils/arrayUtil');
+const { kbTypes } = require('../models/kbConstants');
+const Sitemapper = require('sitemapper');
+
+const aiService = require('../services/aiService');
+const aiManager = require('../services/aiManager');
+const integrationService = require('../services/integrationService');
+const kbEvent = require('../event/kbEvent');
+
+const AMQP_MANAGER_URL = process.env.AMQP_MANAGER_URL;
+const JOB_TOPIC_EXCHANGE = process.env.JOB_TOPIC_EXCHANGE_TRAIN || 'tiledesk-trainer';
+const JOB_TOPIC_EXCHANGE_HYBRID = process.env.JOB_TOPIC_EXCHANGE_TRAIN_HYBRID || 'tiledesk-trainer-hybrid';
+const KB_WEBHOOK_TOKEN = process.env.KB_WEBHOOK_TOKEN || 'kbcustomtoken';
+const PINECONE_RERANKING = process.env.PINECONE_RERANKING === true || process.env.PINECONE_RERANKING === "true";
+const apiUrl = process.env.API_URL || configGlobal.apiUrl;
+
+
+let MAX_UPLOAD_FILE_SIZE = process.env.MAX_UPLOAD_FILE_SIZE;
+let uploadlimits = undefined;
+
+if (MAX_UPLOAD_FILE_SIZE) {
+  uploadlimits = { fileSize: parseInt(MAX_UPLOAD_FILE_SIZE) };
+  winston.debug("Max upload file size is : " + MAX_UPLOAD_FILE_SIZE);
+} else {
+  winston.debug("Max upload file size is infinity");
+}
+var upload = multer({ limits: uploadlimits });
+
+let jobManager = new JobManager(AMQP_MANAGER_URL, {
+  debug: false,
+  topic: JOB_TOPIC_EXCHANGE,
+  exchange: JOB_TOPIC_EXCHANGE
+})
+
+jobManager.connectAndStartPublisher((status, error) => {
+  if (error) {
+    winston.error("connectAndStartPublisher error: ", error);
+  } else {
+    winston.info("KbRoute - ConnectPublisher done with status: ", status);
+  }
+})
+
+let jobManagerHybrid = new JobManager(AMQP_MANAGER_URL, {
+  debug: false,
+  topic: JOB_TOPIC_EXCHANGE_HYBRID,
+  exchange: JOB_TOPIC_EXCHANGE_HYBRID
+})
+
+jobManagerHybrid.connectAndStartPublisher((status, error) => {
+  if (error) {
+    winston.error("connectAndStartPublisher error: ", error);
+  } else {
+    winston.info("KbRoute - ConnectPublisher done with status: ", status);
+  }
+})
+
+let default_preview_settings = {
+  model: 'gpt-4o',
+  max_tokens: 256,
+  temperature: 0.7,
+  top_k: 4,
+  alpha: 0.5,
+  context: null
+}
+
+const default_engine = require('../config/kb/engine');
+const default_engine_hybrid = require('../config/kb/engine.hybrid');
+const default_embedding = require('../config/kb/embedding');
+const PromptManager = require('../config/kb/prompt/rag/PromptManager');
+const situatedContext = require('../config/kb/situatedContext');
+const kbQuestionService = require('../services/kbQuestionService');
+
+const ragPromptManager = new PromptManager(path.join(__dirname, '../config/kb/prompt/rag'));
+
+const RAG_CONTEXT_ENV_OVERRIDES = {
+  "gpt-3.5-turbo": process.env.GPT_3_5_CONTEXT,
+  "gpt-4": process.env.GPT_4_CONTEXT,
+  "gpt-4-turbo-preview": process.env.GPT_4T_CONTEXT,
+  "gpt-4o": process.env.GPT_4O_CONTEXT,
+  "gpt-4o-mini": process.env.GPT_4O_MINI_CONTEXT,
+  "gpt-4.1": process.env.GPT_4_1_CONTEXT,
+  "gpt-4.1-mini": process.env.GPT_4_1_MINI_CONTEXT,
+  "gpt-4.1-nano": process.env.GPT_4_1_NANO_CONTEXT,
+  "gpt-5": process.env.GPT_5_CONTEXT,
+  "gpt-5-mini": process.env.GPT_5_MINI_CONTEXT,
+  "gpt-5-nano": process.env.GPT_5_NANO_CONTEXT,
+  "general": process.env.GENERAL_CONTEXT
+};
+
+/** RAG system prompt per modello: file in config/kb/prompt/rag, sovrascrivibili via env (come prima). */
+function getRagContextTemplate(modelName) {
+  const envOverride = RAG_CONTEXT_ENV_OVERRIDES[modelName];
+  if (envOverride) {
+    return envOverride;
+  }
+  if (!PromptManager.modelMap[modelName] && process.env.GENERAL_CONTEXT) {
+    return process.env.GENERAL_CONTEXT;
+  }
+  return ragPromptManager.getPrompt(modelName);
+}
+
+function normalizeSituatedContext(enable = false) {
+  situatedContext.enable = enable;
+  return situatedContext.enable
+    ? {
+      ...situatedContext,
+      api_key: process.env.SITUATED_CONTEXT_API_KEY || process.env.GPTKEY
+    }
+    : undefined;
+}
+
+/**
+* ****************************************
+* Proxy Section - Start
+* ****************************************
+*/
+router.post('/scrape/single', async (req, res) => {
+
+  let project_id = req.projectid;
+
+  let data = req.body;
+  winston.debug("/scrape/single data: ", data)
+
+  let namespace;
+  try {
+    namespace = await aiManager.checkNamespace(project_id, data.namespace);
+  } catch (err) {
+    let errorCode = err?.errorCode ?? 500;
+    return res.status(errorCode).send({ success: false, error: err.error });
+  }
+
+  if (data.type === "sitemap") {
+
+    const urls = await aiManager.fetchSitemap(data.source).catch((err) => {
+      winston.error("Error fetching sitemap: ", err);
+      return res.status(500).send({ success: false, error: err });
+    })
+
+    if (urls.length === 0) {
+      return res.status(400).send({ success: false, error: "No url found on sitemap" });
+    }
+
+    let sitemapKb;
+    try {
+      sitemapKb = await KB.findById(data.id);
+    } catch (err) {
+      winston.error("Error finding sitemap content with id " + data.id);
+      return res.status(500).send({ success: false, error: "Error finding sitemap content with id " + data.id });
+    }
+
+    if (!sitemapKb) {
+      return res.status(404).send({ success: false, error: "Content not found with id " + data.id });
+    }
+
+    let existingKbs;
+    try {
+      existingKbs = await KB.find({ id_project: project_id, namespace: data.namespace, sitemap_origin_id: data.id }).lean().exec();
+    } catch (err) {
+      winston.error("Error finding existing contents: ", err);
+      return res.status(500).send({ success: false, error: "Error finding existing sitemap contents" });
+    }
+
+    const result = await aiManager.foundSitemapChanges(existingKbs, urls).catch((err) => {
+      winston.error("Error finding sitemap differecens ", err);
+      return res.status(400).send({ success: false, error: "Error finding sitemap differecens" });
+    })
+
+    if (!result) return; // esco qui
+
+    const { addedUrls, removedIds } = result;
+
+    if (removedIds.length > 0) {
+      const idsSet = new Set(removedIds);
+      const kbsToDelete = existingKbs.filter(obj => idsSet.has(obj._id));
+
+      aiManager.removeMultipleContents(namespace, kbsToDelete).catch((err) => {
+        winston.error("Error deleting multiple contents: ", err);
+      })
+    }
+
+    let situated_context;
+    if (sitemapKb.situated_context && sitemapKb.situated_context === true && sitemapKb.scrape_type === 0) {
+      situated_context = normalizeSituatedContext(true);
+    }
+
+    if (addedUrls.length > 0) {
+      const options = {
+        sitemap_origin_id: sitemapKb._id,
+        sitemap_origin: sitemapKb.source,
+        scrape_type: sitemapKb.scrape_type,
+        scrape_options: sitemapKb.scrape_options,
+        refresh_rate: sitemapKb.refresh_rate,
+        tags: sitemapKb.tags,
+        ...(situated_context && { situated_context: situated_context }),
+      }
+      aiManager.addMultipleUrls(namespace, addedUrls, options).catch((err) => {
+        winston.error("(webhook) error adding multiple urls contents: ", err);
+      })
+    }
+
+    return res.status(200).send({ success: true, message: "Content queued for reindexing", added_urls: addedUrls.length, removed_url: removedIds.length });
+  }
+
+  KB.findById(data.id, (err, kb) => {
+    if (err) {
+      winston.error("findById error: ", err);
+      return res.status(500).send({ success: false, error: err });
+    }
+
+    else if (!kb) {
+      return res.status(404).send({ success: false, error: "Unable to find the kb requested" })
+    }
+    else {
+
+      let json = {
+        id: kb._id,
+        type: kb.type,
+        source: kb.source,
+        content: "",
+        namespace: kb.namespace
+      }
+
+      if (kb.content) {
+        json.content = kb.content;
+      }
+
+      if (kb.scrape_type) {
+        json.scrape_type = kb.scrape_type
+      }
+
+      if (kb.scrape_options) {
+        json.parameters_scrape_type_4 = {
+          tags_to_extract: kb.scrape_options.tags_to_extract,
+          unwanted_tags: kb.scrape_options.unwanted_tags,
+          unwanted_classnames: kb.scrape_options.unwanted_classnames
+        }
+      }
+
+      if (kb.tags) {
+        json.tags = kb.tags;
+      }
+
+      json.engine = namespace.engine || default_engine;
+      json.embedding = aiManager.normalizeEmbedding(namespace.embedding);
+
+      if (namespace.hybrid === true) {
+        json.hybrid = true;
+      }
+
+      if (json.situated_context && json.situated_context === true && json.scrape_type === 0) {
+        json.situated_context = normalizeSituatedContext(true);
+      }
+
+      winston.verbose("/scrape/single json: ", json);
+
+      json.id_project = project_id;
+
+      if (process.env.NODE_ENV === "test") {
+        res.status(200).send({ success: true, message: "Skip indexing in test environment", data: json })
+      }
+
+      aiManager.startScrape(json).then((response) => {
+        winston.verbose("startScrape response: ", response);
+        res.status(200).send(response);
+      }).catch((err) => {
+        winston.error("startScrape err: ", err);
+        res.status(500).send({ success: false, error: err });
+      })
+
+    }
+  })
+
+})
+
+router.post('/scrape/status', async (req, res) => {
+
+  let project_id = req.projectid;
+  // (EXAMPLE) body: { id, namespace }
+  let data = req.body;
+  let namespace_id = data.namespace;
+  winston.debug("/scrapeStatus req.body: ", req.body);
+
+  let returnObject = false;
+
+  if (req.query &&
+    req.query.returnObject &&
+    (req.query.returnObject === true || req.query.returnObject === 'true')) {
+    returnObject = true;
+  }
+
+  let namespace;
+  try {
+    namespace = await aiManager.checkNamespace(project_id, namespace_id);
+  } catch (err) {
+    let errorCode = err?.errorCode ?? 500;
+    return res.status(errorCode).send({ success: false, error: err.error });
+  }
+
+  data.engine = namespace.engine || default_engine;
+
+  aiService.scrapeStatus(data).then(async (response) => {
+
+    winston.debug("scrapeStatus response.data: ", response.data);
+
+    let update = {};
+
+    if (response.data.status_code) {
+      // update.status = response.data.status_code;
+      update.status = await aiManager.statusConverter(response.data.status_code)
+
+    }
+
+    KB.findByIdAndUpdate(data.id, update, { new: true }, (err, savedKb) => {
+
+      if (err) {
+        winston.verbose("Status was successfully recovered, but the update on the db failed");
+        winston.error("find kb by id and updated error: ", err);
+
+        if (returnObject) {
+          return res.status(206).send({ warning: "Unable to udpate content on db", message: "The original reply was forwarded", data: response.data });
+        } else {
+          return res.status(200).send(response.data);
+        }
+      }
+
+      if (returnObject) {
+        return res.status(200).send(savedKb);
+      } else {
+        return res.status(200).send(response.data);
+      }
+    })
+
+  }).catch((err) => {
+    winston.error("scrapeStatus err: ", err);
+    let status = err.response.status;
+    res.status(status).send({ statusText: err.response.statusText, error: err.response.data.detail });
+  })
+})
+
+router.post('/qa', async (req, res) => {
+  let id_project = req.projectid;
+  let publicKey = false;
+  let data = req.body;
+  data.id_project = id_project;
+
+  let namespace;
+  try {
+    namespace = await aiManager.checkNamespace(id_project, data.namespace);
+  } catch (err) {
+    let errorCode = err?.errorCode ?? 500;
+    return res.status(errorCode).send({ success: false, error: err.error });
+  }
+  winston.debug("/qa data: ", data);
+
+  let model;
+  try {
+    model = await aiManager.resolveLLMConfig(id_project, data.llm, data.model, data.vllmServer);
+  } catch (err) {
+    let errorCode = err?.code ?? 500;
+    return res.status(errorCode).send({ success: false, error: err.error });
+  }
+
+  if (!model.api_key && model.provider === 'openai') {
+    model.api_key = process.env.GPTKEY;
+    publicKey = true;
+  }
+
+  data.model = model;
+
+  let obj = { createdAt: new Date() };
+
+  let quoteManager = req.app.get('quote_manager');
+  if (publicKey === true) {
+    let isAvailable = await quoteManager.checkQuote(req.project, obj, 'tokens');
+    if (isAvailable === false) {
+      return res.status(403).send({ success: false, message: "Tokens quota exceeded", error_code: 13001 })
+    }
+  }
+
+  // Check if "Advanced Mode" is active. In such case the default_context must be not appended
+  if (!data.advancedPrompt) {
+    const contextTemplate = getRagContextTemplate(data.model.name);
+    if (data.system_context) {
+      data.system_context = data.system_context + " \n" + contextTemplate;
+    } else {
+      data.system_context = contextTemplate;
+    }
+  }
+
+  data.engine = namespace.engine || default_engine;
+  data.embedding = aiManager.normalizeEmbedding(namespace.embedding);
+
+  if (namespace.hybrid === true) {
+    data.search_type = 'hybrid';
+
+    if (data.reranking === true) {
+      data.reranker_model = process.env.RERANKING_MODEL || "cross-encoder/ms-marco-MiniLM-L-6-v2";
+
+      if (!data.reranking_multiplier) {
+        data.reranking_multiplier = 3;
+      }
+
+      if ((data.top_k * data.reranking_multiplier) > 100) {
+        let calculatedRerankingMultiplier = Math.floor(100 / data.top_k);
+        if (calculatedRerankingMultiplier < 1) {
+          calculatedRerankingMultiplier = 1;
+        }
+        data.reranking_multiplier = calculatedRerankingMultiplier;
+      }
+    }
+  }
+
+  if (!namespace.hybrid && data.reranking === true && PINECONE_RERANKING) {
+
+    data.reranking = {
+      "provider": "pinecone",
+      "api_key": process.env.PINECONE_API_KEY,
+      "model": process.env.PINECONE_RERANKING_MODEL || process.env.RERANKING_MODEL || "bge-reranker-v2-m3"
+    }
+
+    if (!data.reranking_multiplier) {
+      data.reranking_multiplier = 3;
+    }
+
+    if ((data.top_k * data.reranking_multiplier) > 100) {
+      let calculatedRerankingMultiplier = Math.floor(100 / data.top_k);
+      if (calculatedRerankingMultiplier < 1) {
+        calculatedRerankingMultiplier = 1;
+      }
+      data.reranking_multiplier = calculatedRerankingMultiplier;
+    }
+  }
+
+  data.stream = data.stream === true;
+  data.use_hyde = data.use_hyde === true;
+  data.use_cache = data.use_cache === true;
+  data.debug = true;
+  delete data.advancedPrompt;
+  winston.verbose("ask data: ", data);
+  if (process.env.NODE_ENV === 'test') {
+    return res.status(200).send({ success: true, message: "Question skipped in test environment", data: data });
+  }
+
+  if (data.stream === true) {
+    // Streaming SSE: use askStream and forward only content as JSON SSE events
+    res.status(200);
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+
+    const sendError = (message) => {
+      try {
+        res.write('data: ' + JSON.stringify({ error: message }) + '\n\n');
+      } catch (_) { }
+      res.end();
+    };
+
+    function extractContent(obj) {
+      if (obj.content != null) return obj.content;
+      if (obj.choices && obj.choices[0]) {
+        const c = obj.choices[0];
+        if (c.delta && c.delta.content != null) return c.delta.content;
+        if (c.message && c.message.content != null) return c.message.content;
+      }
+      return null;
+    }
+
+    /** Same JSON shape as non-stream /qa: stream may wrap it in model_used */
+    function normalizeKbQaPayload(obj) {
+      if (obj && typeof obj === 'object' && obj.model_used != null && typeof obj.model_used === 'object') {
+        return obj.model_used;
+      }
+      return obj;
+    }
+
+    /** Flat final payload like non-stream /qa (answer, prompt_token_size, …) */
+    function isMetadataPayload(obj, streamedContent) {
+      if (obj == null || typeof obj !== 'object') return false;
+      if (streamedContent != null && streamedContent !== '') return false;
+      if (typeof obj.prompt_token_size === 'number') return true;
+      if (obj.answer != null) return true;
+      if (obj.sources != null) return true;
+      if (obj.chunks != null) return true;
+      if (obj.content_chunks != null) return true;
+      return false;
+    }
+
+    /** KB stream summary: full_response + model_used (same info as non-stream body, plus envelope) */
+    function isKbStreamCompletedSummary(obj) {
+      if (obj == null || typeof obj !== 'object') return false;
+      if (obj.status === 'completed') return true;
+      if (obj.full_response != null && obj.model_used != null && typeof obj.model_used === 'object') return true;
+      return false;
+    }
+
+    let streamQaResult = null;
+    const qaStartedAt = Date.now();
+    let streamDurationSeconds = null;
+
+    function captureStreamDurationFromFirstChunk(obj) {
+      if (streamDurationSeconds != null) return;
+      const content = extractContent(obj);
+      if (content != null && content !== '') {
+        streamDurationSeconds = (Date.now() - qaStartedAt) / 1000;
+      }
+    }
+
+    function withMeasuredDuration(payload) {
+      if (streamDurationSeconds != null && payload && typeof payload === 'object') {
+        payload.duration = streamDurationSeconds;
+      }
+      return payload;
+    }
+
+    function captureStreamQaResult(obj) {
+      const normalized = normalizeKbQaPayload(obj);
+      if (normalized && typeof normalized === 'object' && typeof normalized.success === 'boolean') {
+        streamQaResult = normalized;
+      }
+    }
+
+    function forwardSsePayload(payload) {
+      if (payload === '[DONE]') return;
+      let obj;
+      try {
+        obj = JSON.parse(payload);
+      } catch (_) {
+        return;
+      }
+
+      captureStreamQaResult(obj);
+      captureStreamDurationFromFirstChunk(obj);
+
+      if (obj.status === 'started') {
+        return;
+      }
+      if (isKbStreamCompletedSummary(obj)) {
+        res.write('data: ' + JSON.stringify(withMeasuredDuration(normalizeKbQaPayload(obj))) + '\n\n');
+        return;
+      }
+
+      if (obj.type === 'metadata' || obj.event === 'metadata') {
+        res.write('data: ' + JSON.stringify(withMeasuredDuration(normalizeKbQaPayload(obj))) + '\n\n');
+        return;
+      }
+      const content = extractContent(obj);
+      if (content != null && content !== '') {
+        res.write('data: ' + JSON.stringify({ content }) + '\n\n');
+        return;
+      }
+      const normalized = normalizeKbQaPayload(obj);
+      if (isMetadataPayload(normalized, content)) {
+        res.write('data: ' + JSON.stringify(withMeasuredDuration(normalized)) + '\n\n');
+      }
+    }
+
+    aiService.askStream(data).then((resp) => {
+      const stream = resp.data;
+      let buffer = '';
+
+      stream.on('data', (chunk) => {
+        buffer += chunk.toString();
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data: ')) continue;
+          const payload = trimmed.slice(6);
+          forwardSsePayload(payload);
+        }
+      });
+
+      stream.on('end', async () => {
+        const tail = buffer.trim();
+        if (tail) {
+          for (const line of tail.split('\n')) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith('data: ')) continue;
+            forwardSsePayload(trimmed.slice(6));
+          }
+        }
+        if (streamQaResult) {
+          withMeasuredDuration(streamQaResult);
+          const tokens = await aiManager.getTrackingTokens({
+            qaResult: streamQaResult,
+            publicKey,
+            model: data.model,
+            obj,
+            quoteManager,
+            project: req.project,
+          });
+          kbQuestionService.trackKbQaResult(
+            id_project,
+            { namespace: data.namespace, question: data.question },
+            streamQaResult,
+            tokens
+          );
+          if (publicKey === true && typeof streamQaResult.legacy_prompt_token_size === 'number') {
+            res.write('data: ' + JSON.stringify(streamQaResult) + '\n\n');
+          }
+        }
+        res.write('data: [DONE]\n\n');
+        res.end();
+      });
+
+      stream.on('error', (err) => {
+        winston.error('qa stream err: ', err);
+        sendError(err.message || 'Stream error');
+      });
+
+      res.on('close', () => {
+        if (!res.writableEnded) {
+          stream.destroy();
+        }
+      });
+    }).catch((err) => {
+      winston.error('qa err: ', err);
+      winston.error('qa err.response: ', err.response);
+      const message = (err.response && err.response.data && typeof err.response.data.pipe !== 'function' && err.response.data.detail)
+        ? err.response.data.detail
+        : (err.response && err.response.statusText) || err.message || String(err);
+      if (!res.headersSent) {
+        res.status(err.response && err.response.status ? err.response.status : 500);
+      }
+      sendError(message);
+    });
+    return;
+  }
+
+  const qaStartedAt = Date.now();
+
+  aiService.askNamespace(data).then(async (resp) => {
+    winston.debug("qa resp: ", resp.data);
+    let answer = resp.data;
+
+    answer.duration = (Date.now() - qaStartedAt) / 1000;
+
+    const tokens = await aiManager.getTrackingTokens({
+      qaResult: answer,
+      publicKey,
+      model: data.model,
+      obj,
+      quoteManager,
+      project: req.project,
+    });
+    kbQuestionService.trackKbQaResult(
+      id_project,
+      { namespace: data.namespace, question: data.question },
+      answer,
+      tokens
+    );
+
+    return res.status(200).send(answer);
+
+  }).catch((err) => {
+    winston.error("qa err: ", err);
+    winston.error("qa err.response: ", err.response);
+    if (err.response && err.response.status) {
+      let status = err.response.status;
+      res.status(status).send({ success: false, statusText: err.response.statusText, error: err.response.data.detail });
+    }
+    else {
+      res.status(500).send({ success: false, error: err });
+    }
+
+  })
+
+})
+
+// router.post('/qa', async (req, res) => {
+
+//   let project_id = req.projectid;
+//   let publicKey = false;
+//   let data = req.body;
+//   let ollama_integration;
+//   let vllm_integration;
+
+//   let namespace;
+//   try {
+//     namespace = await aiManager.checkNamespace(project_id, data.namespace);
+//   } catch (err) {
+//     let errorCode = err?.errorCode ?? 500;
+//     return res.status(errorCode).send({ success: false, error: err.error });
+//   }
+//   winston.debug("/qa data: ", data);
+
+//   if (!data.llm) {
+//     data.llm = "openai";
+//   }
+
+//   if (data.llm === 'ollama') {
+//     data.gptkey = process.env.GPTKEY;
+//     try {
+//       ollama_integration = await integrationService.getIntegration(project_id, 'ollama');
+//     } catch (err) {
+//       let error_code = err.code || 500;
+//       let error_message = err.error || `Unable to get integration for ${data.llm}`;
+//       return res.status(error_code).send({ success: false, error: error_message });
+//     }
+//   }
+//   else if (data.llm === 'vllm') {
+//     data.gptkey = process.env.GPTKEY;
+//     try {
+//       vllm_integration = await integrationService.getIntegration(project_id, 'vllm')
+//     } catch (err) {
+//       let error_code = err.code || 500;
+//       let error_message = err.error || `Unable to get integration for ${data.llm}`;
+//       return res.status(error_code).send({ success: false, error: error_message });
+//     }
+//   } else {
+//     try {
+//       let key = await integrationService.getKeyFromIntegration(project_id, data.llm);
+
+//       if (!key) {
+//         if (data.llm === 'openai') {
+//           data.gptkey = process.env.GPTKEY;
+//           publicKey = true;
+//         } else {
+//           return res.status(404).send({ success: false, error: `Invalid or empty key provided for ${data.llm}` });
+//         }
+//       } else {
+//         data.gptkey = key;
+//       }
+
+//     } catch (err) {
+//       let error_code = err.code || 500;
+//       let error_message = err.error || `Unable to get integration for ${data.llm}`;
+//       return res.status(error_code).send({ success: false, error: error_message });
+//     }
+//   }
+
+//   let obj = { createdAt: new Date() };
+
+//   let quoteManager = req.app.get('quote_manager');
+//   if (publicKey === true) {
+//     let isAvailable = await quoteManager.checkQuote(req.project, obj, 'tokens');
+//     if (isAvailable === false) {
+//       return res.status(403).send({ success: false, message: "Tokens quota exceeded", error_code: 13001})
+//     }
+//   }
+
+//   // Check if "Advanced Mode" is active. In such case the default_context must be not appended
+//   if (!data.advancedPrompt) {
+//     const contextTemplate = contexts[data.model] || contexts["general"];
+//     if (data.system_context) {
+//       data.system_context = data.system_context + " \n" + contextTemplate;
+//     } else {
+//       data.system_context = contextTemplate;
+//     }
+//   }
+
+//   data.engine = namespace.engine || default_engine;
+//   data.embedding = namespace.embedding || default_embedding;
+//   data.embedding.api_key = process.env.EMBEDDING_API_KEY || process.env.GPTKEY;
+
+//   if (namespace.hybrid === true) {
+//     data.search_type = 'hybrid';
+
+//     if (data.reranking === true) {
+//       data.reranking_multiplier = 3;
+//       data.reranker_model = "cross-encoder/ms-marco-MiniLM-L-6-v2";
+//     }
+//   }
+
+//   if (data.llm === 'ollama') {
+//     if (!ollama_integration.value.url) {
+//       return res.status(422).send({ success: false, error: "Server url for ollama is empty or invalid"})
+//     }
+//     data.model = {
+//       name: data.model,
+//       url: ollama_integration.value.url,
+//       provider: 'ollama'
+//     }
+//     data.stream = false;
+//   }
+
+//   if (data.llm === 'vllm') {
+//     if (!vllm_integration.value.url) {
+//       return res.status(422).send({ success: false, error: "Server url for vllm is empty or invalid"})
+//     }
+//     data.model = {
+//       name: data.model,
+//       url: vllm_integration.value.url,
+//       provider: 'vllm'
+//     }
+//     data.stream = false;
+//   }
+
+//   delete data.advancedPrompt;
+//   winston.verbose("ask data: ", data);
+
+//   if (process.env.NODE_ENV === 'test') {
+//     return res.status(200).send({ success: true, message: "Question skipped in test environment", data: data });
+//   }
+
+//   data.debug = true;
+
+//   aiService.askNamespace(data).then((resp) => {
+//     winston.debug("qa resp: ", resp.data);
+//     let answer = resp.data;
+
+//     if (publicKey === true) {
+//       let multiplier = MODELS_MULTIPLIER[data.model];
+//       if (!multiplier) {
+//         multiplier = 1;
+//         winston.info("No multiplier found for AI model")
+//       }
+//       obj.multiplier = multiplier;
+//       obj.tokens = answer.prompt_token_size;
+
+//       let incremented_key = quoteManager.incrementTokenCount(req.project, obj);
+//       winston.verbose("incremented_key: ", incremented_key);
+//     }
+
+//     return res.status(200).send(answer);
+
+//   }).catch((err) => {
+//     winston.error("qa err: ", err);
+//     winston.error("qa err.response: ", err.response);
+//     if (err.response && err.response.status) {
+//       let status = err.response.status;
+//       res.status(status).send({ success: false, statusText: err.response.statusText, error: err.response.data.detail });
+//     }
+//     else {
+//       res.status(500).send({ success: false, error: err });
+//     }
+
+//   })
+// })
+
+router.delete('/delete', async (req, res) => {
+
+  let project_id = req.projectid;
+  let data = req.body;
+  winston.debug("/delete data: ", data);
+
+  let namespace;
+  try {
+    namespace = await aiManager.checkNamespace(project_id, namespace_id);
+  } catch (err) {
+    let errorCode = err?.errorCode ?? 500;
+    return res.status(errorCode).send({ success: false, error: err.error });
+  }
+
+  data.engine = namespace.engine || default_engine;
+
+  aiService.deleteIndex(data).then((resp) => {
+    winston.debug("delete resp: ", resp.data);
+    res.status(200).send(resp.data);
+  }).catch((err) => {
+    winston.error("delete err: ", err);
+    let status = err.response.status;
+    res.status(status).send({ statusText: err.response.statusText, error: err.response.data.detail });
+  })
+
+})
+
+router.delete('/deleteall', async (req, res) => {
+
+  let project_id = req.projectid;
+  let data = req.body;
+  let namespace_id = data.namespace;
+  winston.debug('/delete all data: ', data);
+
+  let namespace;
+  try {
+    namespace = await aiManager.checkNamespace(project_id, namespace_id);
+  } catch (err) {
+    let errorCode = err?.errorCode ?? 500;
+    return res.status(errorCode).send({ success: false, error: err.error });
+  }
+
+  data.engine = namespace.engine || default_engine;
+
+  winston.verbose("/deleteall data: ", data);
+
+  aiService.deleteNamespace(data).then((resp) => {
+    winston.debug("delete namespace resp: ", resp.data);
+    kbEvent.emit('kb.contents.delete', { req, namespace_id, project_id });
+    res.status(200).send(resp.data);
+  }).catch((err) => {
+    winston.error("delete namespace err: ", err);
+    let status = err.response.status;
+    res.status(status).send({ statusText: err.response.statusText, error: err.response.data.detail });
+  })
+})
+/**
+* ****************************************
+* Proxy Section - Start
+* ****************************************
+*/
+
+
+//----------------------------------------
+
+
+/**
+ * ****************************************
+ * Namespace Section - Start
+ * ****************************************
+ */
+router.get('/namespace/all', async (req, res) => {
+
+  let project_id = req.projectid;
+
+  Namespace.find({ id_project: project_id }).lean().exec(async (err, namespaces) => {
+
+    if (err) {
+      winston.error("find namespaces error: ", err);
+      return res.status(500).send({ success: false, error: err });
+    }
+    else if (namespaces.length == 0) {
+
+      // Create Default Namespace
+      let new_namespace = new Namespace({
+        id_project: project_id,
+        id: project_id,
+        name: "Default",
+        preview_settings: default_preview_settings,
+        default: true,
+        engine: default_engine,
+        embedding: default_embedding
+      })
+
+      new_namespace.save((err, savedNamespace) => {
+        if (err) {
+          winston.error("create default namespace error: ", err);
+          return res.status(500).send({ success: false, error: err });
+        }
+
+        let namespaceObj = savedNamespace.toObject();
+        delete namespaceObj._id;
+        delete namespaceObj.__v;
+
+        let namespaces = [];
+        namespaces.push(namespaceObj);
+
+        return res.status(200).send(namespaces);
+
+      })
+
+    } else {
+
+      let namespaceObjArray = [];
+      if (req.query.count) {
+        namespaceObjArray = await Promise.all(
+          namespaces.map(async ({ _id, __v, ...keepAttrs }) => {
+            const count = await KB.countDocuments({ id_project: keepAttrs.id_project, namespace: keepAttrs.id });
+            return { ...keepAttrs, count };
+          })
+        );
+      } else {
+        namespaceObjArray = namespaces.map(({ _id, __v, ...keepAttrs }) => keepAttrs)
+      }
+
+      winston.debug("namespaceObjArray: ", namespaceObjArray);
+      return res.status(200).send(namespaceObjArray);
+    }
+  })
+})
+
+router.get('/namespace/:id/chunks/:content_id', async (req, res) => {
+
+  let project_id = req.projectid;
+  let namespace_id = req.params.id;
+  let content_id = req.params.content_id;
+
+  let namespace;
+  try {
+    namespace = await aiManager.checkNamespace(project_id, namespace_id);
+  } catch (err) {
+    let errorCode = err?.errorCode ?? 500;
+    return res.status(errorCode).send({ success: false, error: err.error });
+  }
+
+  let content = await KB.find({ id_project: project_id, namespace: namespace_id, _id: content_id }).catch((err) => {
+    winston.error("find content error: ", err);
+    return res.status(403).send({ success: false, error: err })
+  })
+
+  if (!content) {
+    return res.status(403).send({ success: false, error: "Not allowed. The content does not belong to the current namespace." })
+  }
+
+  let engine = namespace.engine || default_engine;
+
+  if (process.env.NODE_ENV === 'test') {
+    return res.status(200).send({ success: true, message: "Get chunks skipped in test environment" });
+  }
+
+  aiService.getContentChunks(namespace_id, content_id, engine).then((resp) => {
+    let chunks = resp.data;
+    winston.debug("chunks for content " + content_id);
+    winston.debug("chunks found ", chunks);
+    return res.status(200).send(chunks);
+
+  }).catch((err) => {
+    winston.error("error getting content chunks err.response: ", err.response)
+    winston.error("error getting content chunks err.data: ", err.data)
+    return res.status(500).send({ success: false, error: err });
+  })
+
+})
+
+router.get('/namespace/:id/chatbots', async (req, res) => {
+
+  let project_id = req.projectid;
+  let namespace_id = req.params.id;
+
+  let chatbotsArray = [];
+
+  let namespace;
+  try {
+    namespace = await aiManager.checkNamespace(project_id, namespace_id);
+  } catch (err) {
+    let errorCode = err?.errorCode ?? 500;
+    return res.status(errorCode).send({ success: false, error: err.error });
+  }
+
+  let intents = await faq.find({ id_project: project_id, 'actions.namespace': namespace_id }).catch((err) => {
+    winston.error("Error find intents: ", err);
+    return res.status(500).send({ success: false, message: 'Unable to retrieve intents using the selected namespace', error: err });
+  })
+
+  if (!intents || intents.length == 0) {
+    winston.verbose("No intents found for the selected chatbot")
+    return res.status(200).send(chatbotsArray);
+  }
+
+  let chatbots = intents.map(i => i.id_faq_kb);
+  let uniqueChatbots = [...new Set(chatbots)];
+
+  let chatbotPromises = uniqueChatbots.map(async (c_id) => {
+    try {
+      let chatbot = await faq_kb.findOne({ _id: c_id, trashed: false });
+      if (chatbot) {
+        let data = {
+          _id: chatbot._id,
+          name: chatbot.name
+        }
+        chatbotsArray.push(data);
+      }
+    } catch (err) {
+      winston.error("error getting chatbot: ", err);
+    }
+  });
+
+  await Promise.all(chatbotPromises);
+
+  winston.debug("chatbotsArray: ", chatbotsArray);
+
+  res.status(200).send(chatbotsArray);
+})
+
+router.get('/namespace/export/:id', async (req, res) => {
+
+  let id_project = req.projectid;
+  let namespace_id = req.params.id;
+
+  let query = {};
+  query.id_project = id_project;
+  query.namespace = namespace_id;
+
+  if (req.query.status) {
+    query.status = parseInt(req.query.status)
+  }
+
+  query.type = { $in: [kbTypes.URL, kbTypes.TEXT, kbTypes.FAQ] };
+
+  let namespace;
+  try {
+    namespace = await aiManager.checkNamespace(id_project, namespace_id);
+  } catch (err) {
+    winston.error("Error checking namespace: ", err);
+    let errorCode = err?.errorCode ?? 500;
+    let errorMessage = err?.error || "Error checking namespace";
+    return res.status(errorCode).send({ success: false, error: errorMessage });
+  }
+
+  let name = namespace.name;
+  let preview_settings = namespace.preview_settings;
+
+  let contents = await KB.find(query).catch((err) => {
+    winston.error("Error getting contents for export ", err);
+    return res.status(500).send({ success: false, error: "Unable to get contents for namespace " + namespace_id })
+  })
+
+  try {
+    let filename = await aiManager.generateFilename(name);
+    let json = {
+      name: name,
+      preview_settings: preview_settings,
+      contents: contents
+    }
+    let json_string = JSON.stringify(json);
+    res.set({ "Content-Disposition": `attachment; filename="${filename}.json"` });
+    return res.send(json_string);
+  } catch (err) {
+    winston.error("Error genereting json ", err);
+    return res.status(500).send({ success: false, error: "Error genereting json file" })
+  }
+
+})
+
+router.post('/namespace', async (req, res) => {
+
+  let project_id = req.projectid;
+  let body = req.body;
+  winston.debug("add namespace body: ", body);
+
+  let engine = default_engine;
+
+  let hybrid = false;
+  if ('hybrid' in req.body) {
+    if (typeof req.body.hybrid !== 'boolean') {
+      return res.status(400).send({ success: false, error: "Value not accepted for 'hybrid' field. Expected boolean." });
+    }
+    hybrid = req.body.hybrid;
+  }
+
+  if (hybrid) {
+    if (req.project?.profile?.customization?.hybrid) {
+      engine = default_engine_hybrid;
+    } else {
+      return res.status(403).send({ success: false, error: "Hybrid mode is not allowed for the current project" });
+    }
+  }
+
+  var namespace_id = mongoose.Types.ObjectId();
+  let new_namespace = new Namespace({
+    id_project: project_id,
+    id: namespace_id,
+    name: body.name,
+    hybrid: hybrid,
+    preview_settings: default_preview_settings,
+    engine: engine,
+    embedding: default_embedding
+  })
+
+  let namespaces = await Namespace.find({ id_project: project_id }).catch((err) => {
+    winston.error("find namespaces error: ", err)
+    //res.status(500).send({ success: false, error: err })
+  })
+  if (!namespaces || namespaces.length == 0) {
+    new_namespace.default = true;
+  }
+
+  let quoteManager = req.app.get('quote_manager');
+  let limits = await quoteManager.getPlanLimits(req.project);
+  let ns_limit = limits.namespace;
+
+  if (namespaces.length >= ns_limit) {
+    return res.status(403).send({ success: false, error: "Maximum number of resources reached for the current plan", plan_limit: ns_limit });
+  }
+
+  new_namespace.save((err, savedNamespace) => {
+    if (err) {
+      winston.error("create namespace error: ", err);
+      return res.status(500).send({ success: false, error: err });
+    }
+
+    kbEvent.emit('kb.namespace.create', { req, savedNamespace, body, namespace_id, project_id });
+
+    let namespaceObj = savedNamespace.toObject();
+    delete namespaceObj._id;
+    delete namespaceObj.__v;
+    return res.status(200).send(namespaceObj);
+  })
+})
+
+router.post('/namespace/import/:id', upload.single('uploadFile'), async (req, res) => {
+
+  let id_project = req.projectid;
+  let namespace_id = req.params.id;
+
+  let json_string;
+  let json;
+  if (req.file) {
+    json_string = req.file.buffer.toString('utf-8');
+    json = JSON.parse(json_string);
+  } else {
+    json = req.body;
+  }
+
+  if (!json.contents) {
+    winston.warn("Imported json don't contain contents array");
+    return res.status(400).send({ success: false, error: "Imported json must contain the contents array" });
+  }
+
+  if (!Array.isArray(json.contents)) {
+    winston.warn("Invalid contents type. Expected type: array");
+    return res.status(400).send({ success: false, error: "The content field must be of type Array[]" });
+  }
+
+  let contents = json.contents;
+
+  let namespaces = await Namespace.find({ id_project: id_project }).catch((err) => {
+    winston.error("find namespaces error: ", err)
+    res.status(500).send({ success: false, error: err })
+  })
+
+  if (!namespaces || namespaces.length == 0) {
+    let alert = "No namespace found for the selected project " + id_project + ". Cannot add content to a non-existent namespace."
+    winston.warn(alert);
+    res.status(403).send(alert);
+  }
+
+  let namespaceIds = namespaces.map(namespace => namespace.id);
+
+  if (!namespaceIds.includes(namespace_id)) {
+    return res.status(403).send({ success: false, error: "Not allowed. The namespace does not belong to the current project." })
+  }
+
+  let quoteManager = req.app.get('quote_manager');
+  let limits = await quoteManager.getPlanLimits(req.project);
+  let kbs_limit = limits.kbs;
+  winston.verbose("Limit of kbs for current plan: " + kbs_limit);
+
+  // let kbs_count = await KB.countDocuments({ id_project: id_project }).exec();
+  // winston.verbose("Kbs count: " + kbs_count);
+
+  // if (kbs_count >= kbs_limit) {
+  //   return res.status(403).send({ success: false, error: "Maximum number of resources reached for the current plan", plan_limit: kbs_limit })
+  // }
+
+  // let total_count = kbs_count + contents.length;
+  if (contents.length > kbs_limit) {
+    return res.status(403).send({ success: false, error: "Cannot exceed the number of resources in the current plan", plan_limit: kbs_limit })
+  }
+
+  let addingContents = [];
+  contents.forEach(async (e) => {
+    let content = {
+      id_project: id_project,
+      name: e.name,
+      source: e.source,
+      type: e.type,
+      content: e.content,
+      namespace: namespace_id,
+      status: -1,
+      ...(e.tags && { tags: e.tags })
+    }
+
+    const optionalFields = ['scrape_type', 'scrape_options', 'refresh_rate'];
+
+    for (const key of optionalFields) {
+      if (e[key] !== undefined) {
+        content[key] = e[key];
+      }
+    }
+
+    addingContents.push(content);
+  })
+
+  // const operations = addingContents.map(({ _id, ...doc }) => ({
+  //   replaceOne: {
+  //     filter: {
+  //       id_project: doc.id_project,
+  //       type: doc.type,
+  //       source: doc.source,
+  //       namespace: namespace_id
+  //     },
+  //     replacement: doc,
+  //     upsert: true
+  //   }
+  // }));
+
+  // Try without delete all contents before imports
+  // Issue 1: the indexes of the content replaced are not deleted from Pinecone
+  // Issue 2: isn't possibile to know how many content will be replaced, so isn't possibile to determine if after the
+  //          import operation the content's limit is respected
+  let ns = namespaces.find(n => n.id === namespace_id);
+  let engine = ns.engine || default_engine;
+  let embedding = aiManager.normalizeEmbedding(ns.embedding);
+  let hybrid = ns.hybrid;
+  const situated_context = normalizeSituatedContext();
+
+
+  if (process.env.NODE_ENV !== "test") {
+    await aiService.deleteNamespace({
+      namespace: namespace_id,
+      engine: engine
+    }).catch((err) => {
+      winston.error("Error deleting namespace contents: ", err)
+      return res.status(500).send({ success: true, error: "Unable to delete namespace contents" })
+    });
+  }
+
+  let deleteResponse = await KB.deleteMany({ id_project: id_project, namespace: namespace_id, type: { $in: ['url', 'text', 'faq'] } }).catch((err) => {
+    winston.error("deleteMany error: ", err);
+    return res.status(500).send({ success: false, error: err });
+  })
+
+  winston.verbose("Content deletetion response: ", deleteResponse);
+
+  try {
+    let addedContents = await KB.insertMany(addingContents);
+    winston.debug("addedContents: ", addedContents);
+  } catch (err) {
+    winston.error("Error adding contents with insertMany: ", err);
+    return res.status(500).send({ success: true, error: "Error importing contents" });
+  }
+
+  let new_contents;
+  try {
+    new_contents = await KB.find({ id_project: id_project, namespace: namespace_id }).lean();
+  } catch (err) {
+    winston.error("Error getting new contents: ", err);
+    return res.status(500).send({ success: false, error: "Unable to get new content" });
+  }
+
+  let resources = new_contents.map(({ name, status, __v, createdAt, updatedAt, id_project, ...keepAttrs }) => keepAttrs)
+  resources = resources.map(({ _id, scrape_options, ...rest }) => {
+    return {
+      id: _id,
+      parameters_scrape_type_4: scrape_options,
+      embedding: embedding,
+      engine: engine,
+      ...(situated_context && { situated_context: situated_context }),
+      ...rest
+    }
+  });
+
+  winston.verbose("resources to be sent to worker: ", resources);
+
+  if (process.env.NODE_ENV !== "test") {
+    aiManager.scheduleScrape(resources, hybrid);
+  }
+
+  if (process.env.NODE_ENV === "test") {
+    return res.status(200).send({ success: true, message: "Contents imported successfully", schedule_json: resources });
+  }
+
+  res.status(200).send({ success: true, message: "Contents imported successfully" });
+
+
+  // saveBulk(operations, addingContents, id_project).then((result) => {
+
+  //   let ns = namespaces.find(n => n.id === namespace_id);
+  //   let engine = ns.engine || default_engine;
+
+  //   let resources = result.map(({ name, status, __v, createdAt, updatedAt, id_project, ...keepAttrs }) => keepAttrs)
+  //   resources = resources.map(({ _id, scrape_options, ...rest }) => {
+  //     return { id: _id, parameters_scrape_type_4: scrape_options, engine: engine, ...rest}
+  //   });
+
+  //   winston.verbose("resources to be sent to worker: ", resources);
+
+  //   if (process.env.NODE_ENV !== 'test') {
+  //     scheduleScrape(resources);
+  //   }
+
+  //   //res.status(200).send(result);
+  //   res.status(200).send({ success: true, message: "Contents imported successfully"});
+
+  // }).catch((err) => {
+  //   winston.error("Unable to save kbs in bulk ", err)
+  //   res.status(500).send(err);
+  // })
+
+})
+
+router.put('/namespace/:id', async (req, res) => {
+
+  let namespace_id = req.params.id;
+  let body = req.body;
+  winston.debug("update namespace body: ", body);
+
+  let update = {};
+
+  if (body.name) {
+    update.name = body.name;
+  }
+  if (body.preview_settings) {
+    update.preview_settings = body.preview_settings;
+  }
+
+  Namespace.findOneAndUpdate({ id: namespace_id }, update, { new: true, upsert: true }, (err, updatedNamespace) => {
+    if (err) {
+      winston.error("update namespace error: ", err);
+      return res.status(500).send({ success: false, error: err });
+    }
+
+    kbEvent.emit('kb.namespace.update', { updatedNamespace, namespace_id });
+
+    let namespaceObj = updatedNamespace.toObject();
+    delete namespaceObj._id;
+    delete namespaceObj.__v;
+    res.status(200).send(namespaceObj);
+  })
+})
+
+router.delete('/namespace/:id', async (req, res) => {
+
+  let project_id = req.projectid;
+  let namespace_id = req.params.id;
+
+  let namespace = await Namespace.findOne({ id_project: project_id, id: namespace_id }).catch((err) => {
+    winston.error("find namespace error: ", err);
+    res.status(500).send({ success: false, error: err });
+  })
+
+  if (!namespace) {
+    let alert = "No namespace found for id " + namespace_id;
+    winston.warn(alert);
+    res.status(404).send({ success: false, error: alert })
+  }
+
+  let data = {
+    namespace: namespace_id,
+    engine: namespace.engine || default_engine
+  }
+
+  if (req.query.contents_only && (req.query.contents_only === true || req.query.contents_only === 'true')) {
+
+    aiService.deleteNamespace(data).then(async (resp) => {
+      winston.debug("delete namespace resp: ", resp.data);
+
+      let deleteResponse = await KB.deleteMany({ id_project: project_id, namespace: namespace_id }).catch((err) => {
+        winston.error("deleteMany error: ", err);
+        return res.status(500).send({ success: false, error: err });
+      })
+      winston.debug("delete all contents response: ", deleteResponse);
+
+      kbEvent.emit('kb.contents.delete', { req, namespace_id, project_id, deletedCount: deleteResponse?.deletedCount });
+
+      return res.status(200).send({ success: true, message: "All contents deleted successfully" })
+
+    }).catch((err) => {
+
+      winston.error("deleteNamespace err: ", err);
+      winston.error("deleteNamespace err.response: ", err.response);
+      if (err.response && err.response.status) {
+        let status = err.response.status;
+        res.status(status).send({ success: false, statusText: err.response.statusText, error: err.response.data.detail });
+      } else {
+        res.status(500).send({ success: false, message: "Unable to delete namespace", error: err })
+      }
+    })
+
+  } else {
+
+    let namespace = await Namespace.findOne({ id: namespace_id }).catch((err) => {
+      winston.error("findOne namespace error: ", err);
+      return res.status(500).send({ success: false, error: err });
+    })
+    if (namespace.default === true) {
+      winston.error("Default namespace cannot be deleted");
+      return res.status(403).send({ success: false, error: "Default namespace cannot be deleted" });
+    }
+
+    aiService.deleteNamespace(data).then(async (resp) => {
+      winston.debug("delete namespace resp: ", resp.data);
+
+      let deleteResponse = await KB.deleteMany({ id_project: project_id, namespace: namespace_id }).catch((err) => {
+        winston.error("deleteMany error: ", err);
+        return res.status(500).send({ success: false, error: err });
+      })
+      winston.debug("delete all contents response: ", deleteResponse);
+
+      let deleteNamespaceResponse = await Namespace.findOneAndDelete({ id: namespace_id }).catch((err) => {
+        winston.error("deleteOne namespace error: ", err);
+        return res.status(500).send({ success: false, error: err });
+      })
+      winston.debug("delete namespace response: ", deleteNamespaceResponse);
+
+      return res.status(200).send({ success: true, message: "Namespace deleted succesfully" })
+
+    }).catch((err) => {
+      let status = 400;
+      if (err.response && err.response.status) {
+        status = err.response.status;
+      }
+      return res.status(status).send({ success: false, error: "Unable to delete namespace" })
+    })
+
+  }
+
+
+
+})
+/**
+ * ****************************************
+ * Namespace Section - End
+ * ****************************************
+ */
+
+
+//----------------------------------------
+
+
+/**
+* ****************************************
+* Content Section - Start
+* ****************************************
+*/
+router.get('/', async (req, res) => {
+
+  let project_id = req.projectid;
+  let namespace = req.query.namespace;
+  if (!namespace) {
+    return res.status(400).send({ success: false, error: "queryParam 'namespace' is not defined" })
+  }
+  let status;
+  let type;
+  let limit = 200;
+  let page = 0;
+  let direction = -1;
+  let sortField = "updatedAt";
+  let text;
+
+  let query = {};
+  query["id_project"] = project_id;
+  query["namespace"] = namespace;
+
+  if (req.query.status) {
+    status = parseInt(req.query.status);
+    query["status"] = status;
+    winston.debug("Get kb status: " + status)
+  }
+
+  if (req.query.type) {
+    type = req.query.type;
+    query["type"] = type;
+    winston.debug("Get kb type: " + type);
+  }
+
+  if (req.query.limit) {
+    limit = parseInt(req.query.limit);
+    winston.debug("Get kb limit: " + limit)
+  }
+
+  if (req.query.page) {
+    page = parseInt(req.query.page);
+    winston.debug("Get kb page: " + page)
+  }
+
+  let skip = page * limit;
+  winston.debug("Get kb skip page: " + skip);
+
+  if (req.query.direction) {
+    direction = parseInt(req.query.direction)
+    winston.debug("Get kb direction: " + direction)
+  }
+
+  if (req.query.sortField) {
+    sortField = req.query.sortField;
+    winston.debug("Get kb sortField: " + sortField)
+  }
+
+  if (req.query.search) {
+    text = req.query.search;
+    query['source'] = new RegExp(text);
+    winston.debug("Get kb text: " + text);
+  }
+
+  let sortQuery = {};
+  sortQuery[sortField] = direction;
+  winston.debug("Get kb sortQuery: " + sortQuery);
+
+  KB.countDocuments(query, (err, kbs_count) => {
+    if (err) {
+      winston.error("Find all kbs error: ", err);
+    }
+    winston.debug("KBs count: ", kbs_count);
+
+    KB.find(query)
+      .skip(skip)
+      .limit(limit)
+      .sort(sortQuery)
+      .exec((err, kbs) => {
+        if (err) {
+          winston.error("Find all kbs error: ", err);
+          return res.status(500).send({ success: false, error: err });
+        }
+
+        winston.debug("KBs found: ", kbs);
+
+        let response = {
+          count: kbs_count,
+          query: {},
+          kbs: kbs
+        }
+        if (status) {
+          response.query.status = status;
+        }
+        if (limit) {
+          response.query.limit = limit;
+        }
+        if (status) {
+          response.query.page = page;
+        }
+        if (sortField) {
+          response.query.sortField = sortField;
+        }
+        if (direction) {
+          response.query.direction = direction;
+        }
+        if (text) {
+          response.query.search = text;
+        }
+
+
+        return res.status(200).send(response);
+      })
+
+  })
+
+
+})
+
+router.get('/:kb_id', async (req, res) => {
+
+  let project_id = req.projectid;
+  let kb_id = req.params.kb_id;
+
+  try {
+    let content = await KB.findOne({ id_project: project_id, _id: kb_id })
+    if (!content) {
+      return res.status(404).send({ success: false, error: "Content not found with id " + kb_id + " for project " + project_id });
+    }
+    return res.status(200).send(content);
+
+  } catch (err) {
+    winston.error("Find kb by id error: ", err);
+    return res.status(500).send({ success: false, error: "An error occurred retrieving the content" });
+  }
+
+})
+
+router.post('/', async (req, res) => {
+
+  const id_project = req.projectid;
+  const project = req.project
+
+  const { name, type, source, content, refresh_rate, scrape_type, scrape_options, tags, situated_context, chunk_regex } = req.body;
+  const namespace_id = req.body?.namespace;
+
+  if (!namespace_id) {
+    return res.status(400).send({ success: false, error: "parameter 'namespace' is not defined" });
+  }
+
+  let namespace;
+  try {
+    namespace = await aiManager.checkNamespace(id_project, namespace_id);
+  } catch (err) {
+    let errorCode = err?.errorCode ?? 500;
+    return res.status(errorCode).send({ success: false, error: err.error });
+  }
+
+  const quoteManager = req.app.get('quote_manager');
+  try {
+    await aiManager.checkQuotaAvailability(quoteManager, project, 1)
+  } catch (err) {
+    let errorCode = err?.errorCode ?? 500;
+    return res.status(errorCode).send({ success: false, error: err.error, plan_limit: err.plan_limit })
+  }
+
+  let new_kb = {
+    id_project,
+    name,
+    type,
+    source,
+    content,
+    namespace: namespace_id,
+    status: -1
+  }
+
+  if (type === 'txt') {
+    new_kb.scrape_type = 1;
+  }
+  if (type === 'url') {
+    new_kb.refresh_rate = refresh_rate || 'never';
+    if (scrape_type === 0 || scrape_type === 4) {
+      new_kb.scrape_type = scrape_type;
+      new_kb.scrape_options = scrape_options;
+    }
+    else {
+      new_kb.scrape_type = 2;
+      new_kb.scrape_options = aiManager.setDefaultScrapeOptions();
+    }
+  }
+  if (type === 'regex_custom') {
+    new_kb.chunk_regex = chunk_regex;
+  }
+
+  if (tags && Array.isArray(tags) && tags.every(tag => typeof tag === "string")) {
+    new_kb.tags = tags;
+  }
+
+  if (situated_context && situated_context === true && (type !== "url" || scrape_type === 0)) {
+    new_kb.situated_context = situated_context;
+  }
+
+  winston.debug("adding kb: ", new_kb);
+
+  KB.findOneAndUpdate({ id_project, type, source }, new_kb, { upsert: true, new: true, rawResult: true }, async (err, raw_content) => {
+    if (err) {
+      winston.error("findOneAndUpdate with upsert error: ", err);
+      res.status(500).send({ success: false, error: err });
+    }
+    else {
+
+      delete raw_content.ok;
+      delete raw_content.$clusterTime;
+      delete raw_content.operationTime;
+
+      const saved_kb = raw_content.value;
+      const webhook = apiUrl + '/webhook/kb/status?token=' + KB_WEBHOOK_TOKEN;
+      const embedding = aiManager.normalizeEmbedding(namespace.embedding);
+
+      const situated_context_obj = normalizeSituatedContext(saved_kb.situated_context);
+
+      const json = {
+        id: saved_kb._id,
+        type: saved_kb.type,
+        source: saved_kb.source,
+        content: saved_kb.content || "",
+        namespace: saved_kb.namespace,
+        webhook: webhook,
+        hybrid: namespace.hybrid,
+        engine: namespace.engine || default_engine,
+        embedding: embedding,
+        ...(situated_context_obj && { situated_context: situated_context_obj }),
+        ...(saved_kb.scrape_type && { scrape_type: saved_kb.scrape_type }),
+        ...(saved_kb.scrape_options && { parameters_scrape_type_4: saved_kb.scrape_options }),
+        ...(saved_kb.tags && { tags: saved_kb.tags }),
+        ...(saved_kb.chunk_regex && { chunk_regex: saved_kb.chunk_regex })
+      }
+
+      winston.debug("json: ", json);
+
+      if (process.env.NODE_ENV === 'test') {
+        return res.status(200).send({ success: true, message: "Schedule scrape skipped in test environment", data: raw_content, schedule_json: json });
+      }
+
+      aiManager.scheduleScrape([json], namespace.hybrid);
+      return res.status(200).send(raw_content);
+
+    }
+  })
+
+})
+
+router.post('/multi', upload.single('uploadFile'), async (req, res) => {
+
+  let list;
+  if (req.file) {
+    file_string = req.file.buffer.toString('utf-8');
+    list = file_string.trim().split('\n');
+  } else {
+    list = req.body.list;
+  }
+
+  const id_project = req.projectid;
+  const project = req.project;
+  let { refresh_rate = 'never', scrape_type = 2, scrape_options, situated_context } = req.body;
+  let tags = parseStringArrayField(req.body.tags);
+
+
+  if (scrape_type === 2 && !scrape_options) {
+    try {
+      scrape_options = aiManager.setDefaultScrapeOptions();
+    } catch (err) {
+      winston.error("Error setting default scrape options: ", err);
+      return res.status(500).send({ success: false, error: err.error });
+    }
+  }
+
+  const namespace_id = req.query.namespace;
+  if (!namespace_id) {
+    return res.status(400).send({ success: false, error: "queryParam 'namespace' is not defined" })
+  }
+  let namespace;
+  try {
+    namespace = await aiManager.checkNamespace(id_project, namespace_id);
+  } catch (err) {
+    winston.error("Error checking namespace: ", err);
+    let errorCode = err?.errorCode ?? 500;
+    return res.status(errorCode).send({ success: false, error: err.error });
+  }
+
+  const quoteManager = req.app.get('quote_manager');
+  try {
+    await aiManager.checkQuotaAvailability(quoteManager, project, list.length)
+  } catch (err) {
+    let errorCode = err?.errorCode ?? 500;
+    return res.status(errorCode).send({ success: false, error: err.error, plan_limit: err.plan_limit })
+  }
+
+  if (list.length > 300) {
+    winston.error("Too many urls. Can't index more than 300 urls at a time.");
+    return res.status(403).send({ success: false, error: "Too many urls. Can't index more than 300 urls at a time." })
+  }
+
+  const options = {
+    scrape_type,
+    scrape_options,
+    refresh_rate,
+    ...(situated_context && situated_context === true && scrape_type === 0 ? { situated_context: true } : {}),
+    ...(Array.isArray(tags) && tags.length > 0 ? { tags } : {})
+  }
+
+  try {
+    const result = await aiManager.addMultipleUrls(namespace, list, options);
+    return res.status(200).send(result);
+  } catch (err) {
+    winston.error("addMultipleUrls error: ", err)
+    return res.status(500).send({ success: false, error: "Unable to add multiple urls due to an error." });
+  }
+
+})
+
+router.post('/csv', upload.single('uploadFile'), async (req, res) => {
+
+  let project_id = req.projectid;
+  let namespace_id = req.query.namespace;
+
+  let csv = req.file.buffer.toString('utf8');
+  winston.debug("csv: ", csv);
+
+  const { delimiter = ';' } = req.body;
+  let tags = parseStringArrayField(req.body.tags);
+
+  let situated_context = false;
+  if (req.body.situated_context) {
+    situated_context = req.body.situated_context === true || req.body.situated_context === "true";
+  }
+
+
+  let namespace;
+  try {
+    namespace = await aiManager.checkNamespace(project_id, namespace_id);
+  } catch (err) {
+    let errorCode = err?.errorCode ?? 500;
+    return res.status(errorCode).send({ success: false, error: err.error });
+  }
+
+  let webhook = apiUrl + '/webhook/kb/status?token=' + KB_WEBHOOK_TOKEN;
+
+  let kbs = [];
+
+  parsecsv.parseString(csv, { headers: false, delimiter: delimiter })
+    .on("data", (data) => {
+
+      let question = data[0];
+      let answer = data[1];
+
+      kbs.push({
+        id_project: project_id,
+        name: question,
+        source: question,
+        type: 'faq',
+        content: question + "\n" + answer,
+        namespace: namespace_id,
+        status: -1,
+        ...(situated_context && { situated_context: situated_context }),
+        ...(Array.isArray(tags) && tags.length > 0 ? { tags } : {})
+      })
+    })
+    .on("end", async () => {
+      winston.debug("kbs after CSV parsing: ", kbs);
+
+      const quoteManager = req.app.get('quote_manager');
+      try {
+        await aiManager.checkQuotaAvailability(quoteManager, req.project, kbs.length)
+      } catch (err) {
+        let errorCode = err?.errorCode ?? 500;
+        return res.status(errorCode).send({ success: false, error: err.error, plan_limit: err.plan_limit })
+      }
+
+      let operations = kbs.map(doc => {
+        return {
+          updateOne: {
+            filter: { id_project: doc.id_project, type: 'faq', source: doc.source, namespace: namespace_id },
+            update: doc,
+            upsert: true,
+            returnOriginal: false
+          }
+        }
+      })
+
+      aiManager.saveBulk(operations, kbs, project_id, namespace_id).then((result) => {
+
+        let engine = namespace.engine || default_engine;
+        let embedding = aiManager.normalizeEmbedding(namespace.embedding);
+        let hybrid = namespace.hybrid;
+
+        let situated_context_obj;
+        if (situated_context) {
+          situated_context_obj = normalizeSituatedContext(situated_context);
+        }
+
+        let resources = result.map(({ name, status, __v, createdAt, updatedAt, id_project, situated_context, ...keepAttrs }) => keepAttrs)
+        resources = resources.map(({ _id, ...rest }) => {
+          return {
+            id: _id,
+            webhook: webhook,
+            embedding: embedding,
+            engine: engine,
+            ...(situated_context_obj && { situated_context: situated_context_obj }),
+            ...rest
+          };
+        })
+        winston.verbose("resources to be sent to worker: ", resources);
+
+        if (process.env.NODE_ENV === 'test') {
+          return res.status(200).send({ success: true, message: "Schedule scrape skipped in test environment", data: result, schedule_json: resources });
+        }
+
+        aiManager.scheduleScrape(resources, hybrid);
+        return res.status(200).send(result);
+
+      }).catch((err) => {
+        winston.error("Unabled to saved kbs in bulk " + err);
+        res.status(500).send(err);
+      })
+
+    })
+    .on("error", (err) => {
+      winston.error("CSV parsing error: ", err);
+      res.status(400).send({ success: false, error: err });
+    })
+
+})
+
+router.post('/sitemap', async (req, res) => {
+
+  let sitemap_url = req.body.sitemap;
+
+  const sitemap = new Sitemapper({
+    url: sitemap_url,
+    timeout: 15000,
+    debug: false
+  });
+
+  sitemap.fetch().then((data) => {
+    // TODO - check on data.errors to catch error
+    winston.debug("data: ", data);
+    res.status(200).send(data);
+  }).catch((err) => {
+    winston.error("Error fetching sitemap: ", err)
+    res.status(500).send({ success: false, error: err });
+  })
+
+})
+
+router.post('/sitemap/import', async (req, res) => {
+
+  const id_project = req.projectid;
+  const namespace_id = req.query.namespace;
+
+  let { type, source, refresh_rate = 'never', scrape_type = 2, scrape_options, tags, situated_context } = req.body;
+  if (scrape_type === 2 && !scrape_options) {
+    scrape_options = aiManager.setDefaultScrapeOptions();
+  }
+
+  if (type !== "sitemap") {
+    return res.status(403).send({ success: false, error: "Endpoint available for sitemap type only." });
+  }
+
+  if (!namespace_id) {
+    return res.status(400).send({ success: false, error: "queryParam 'namespace' is not defined" })
+  }
+
+  let namespace;
+  try {
+    namespace = await aiManager.checkNamespace(id_project, namespace_id);
+  } catch (err) {
+    let errorCode = err?.errorCode ?? 500;
+    return res.status(errorCode).send({ success: false, error: err.error });
+  }
+
+
+  // let quoteManager = req.app.get('quote_manager');
+  // let limits = await quoteManager.getPlanLimits(req.project);
+  // let kbs_limit = limits.kbs;
+  // winston.verbose("Limit of kbs for current plan: " + kbs_limit);
+
+  // let kbs_count = await KB.countDocuments({ id_project: project_id }).exec();
+  // winston.verbose("Kbs count: " + kbs_count);
+
+  const sitemap = new Sitemapper({
+    url: source,
+    timeout: 15000,
+    debug: false
+  });
+
+  const data = await sitemap.fetch().catch((err) => {
+    winston.error("Error fetching sitemap: ", err);
+    return res.status(500).send({ success: false, error: err });
+  })
+
+  if (data.errors && data.errors.length > 0) {
+    winston.error("An error occurred during sitemap fetch: ", data.errors[0])
+    return res.status(500).send({ success: false, error: "Unable to fecth sitemap due to an error: " + data.errors[0].message })
+  }
+
+  const urls = Array.isArray(data.sites) ? data.sites : [];
+  if (urls.length === 0) {
+    return res.status(400).send({ success: false, error: "No url found on sitemap" });
+  }
+
+  // let total_count = kbs_count + 1 + urls.length;
+  // if (total_count > kbs_limit) {
+  //   return res.status(403).send({ success: false, error: "Cannot exceed the number of resources in the current plan", plan_limit: kbs_limit })
+  // }
+
+  let sitemap_content = {
+    id_project,
+    name: source,
+    source: source,
+    type: 'sitemap',
+    content: "",
+    namespace: namespace_id,
+    scrape_type,
+    scrape_options,
+    refresh_rate,
+    ...(situated_context && situated_context === true && scrape_type === 0 ? { situated_context: true } : {}),
+    ...(Array.isArray(tags) && tags.length > 0 ? { tags } : {})
+  }
+
+  let saved_content;
+  try {
+    saved_content = await KB.findOneAndUpdate({ id_project, type: 'sitemap', source, namespace: namespace_id }, sitemap_content, { upsert: true, new: true }).lean().exec();
+  } catch (err) {
+    winston.error("Error saving content: ", err);
+    return res.status(500).send({ success: false, error: err });
+  }
+
+  const options = {
+    sitemap_origin_id: saved_content._id,
+    sitemap_origin: saved_content.source,
+    scrape_type,
+    scrape_options,
+    refresh_rate,
+    ...(Array.isArray(tags) && tags.length > 0 ? { tags } : {}),
+    ...(situated_context && situated_context === true && scrape_type === 0 ? { situated_context: true } : {}),
+  }
+
+  try {
+    await aiManager.scheduleSitemap(namespace, saved_content, options);
+    let result = await aiManager.addMultipleUrls(namespace, urls, options);
+    if (process.env.NODE_ENV === 'test') {
+      result.result.push(saved_content);
+      return res.status(200).send(result);
+    }
+    result.push(saved_content);
+    return res.status(200).send(result);
+  } catch (err) {
+    return res.status(500).send({ success: false, error: "Unable to add multiple urls from sitemap due to an error." });
+  }
+
+})
+
+router.put('/:kb_id', async (req, res) => {
+
+  const id_project = req.projectid;
+  const project = req.project;
+  const kb_id = req.params.kb_id;
+
+  const { name, type, source, content, refresh_rate, scrape_type, scrape_options, tags } = req.body;
+  const namespace_id = req.body.namespace;
+  let situated_context = req.body.situated_context;
+
+  if (!namespace_id) {
+    return res.status(400).send({ success: false, error: "Missing 'namespace' body parameter" })
+  }
+
+  let namespace;
+  try {
+    namespace = await aiManager.checkNamespace(id_project, namespace_id);
+  } catch (err) {
+    let errorCode = err?.errorCode ?? 500;
+    return res.status(errorCode).send({ success: false, error: err.error });
+  }
+
+  let kb = await KB.findOne({ id_project, namespace: namespace_id, _id: kb_id }).lean().exec();
+
+  if (!kb) {
+    return res.status(404).send({ success: false, error: "Content not found. Unable to update a non-existing content" })
+  }
+
+  let data = {
+    id: kb._id,
+    namespace: namespace_id,
+    engine: namespace.engine || default_engine
+  }
+
+  // if (kb.type === 'sitemap') {
+  //   let new_sitemap = {
+  //     id_project,
+  //     name,
+  //     source,
+  //     type: 'sitemap',
+  //     content: "",
+  //     namespace: namespace_id,
+  //     status: -1,
+  //     scrape_type,
+  //     scrape_options,
+  //     refresh_rate,
+  //     ...(Array.isArray(tags) && tags.length > 0 ? { tags } : {})
+  //   }
+
+  //   try {
+  //     let result = await aiManager.updateSitemap(id_project, namespace, kb, new_sitemap);
+  //     return res.status(200).send(result);
+  //   } catch (err) {
+  //     winston.error("Error updating sitemap: ", err);
+  //     return res.status(500).send({ success: false, error: err });
+  //   }
+  // }
+
+  try {
+    let delete_response = await aiService.deleteIndex(data);
+
+    if (delete_response.data.success === true) {
+      await KB.findOneAndDelete({ id_project, namespace: namespace_id, source }).lean().exec();
+      // continue the flow
+    } else {
+      winston.error("Unable to update content due to an error: ", delete_response.data.error);
+      return res.status(500).send({ success: false, error: delete_response.data.error });
+    }
+
+  } catch (err) {
+    winston.error("Error updating content: ", err);
+    return res.status(500).send({ success: false, error: err });
+  }
+
+  if (situated_context && situated_context === true && scrape_type === 0) {
+    situated_context = true;
+  }
+
+  let new_content = {
+    id_project,
+    name,
+    type,
+    source,
+    content,
+    namespace: namespace_id,
+    status: -1,
+  }
+
+  if (new_content.type === 'url') {
+    new_content.refresh_rate = refresh_rate || 'never';
+    if (scrape_type === 0 || scrape_type === 4) {
+      new_content.scrape_type = scrape_type;
+      new_content.scrape_options = scrape_options;
+    }
+    else {
+      new_content.scrape_type = 2;
+      new_content.scrape_options = aiManager.setDefaultScrapeOptions();
+    }
+  }
+
+  if (kb.sitemap_origin_id) {
+    new_content.sitemap_origin_id = kb.sitemap_origin_id;
+    new_content.sitemap_origin = kb.sitemap_origin;
+  }
+
+  if (tags && Array.isArray(tags) && tags.every(tag => typeof tag === "string")) {
+    new_content.tags = tags;
+  }
+
+  if (situated_context && situated_context === true && scrape_type === 0) {
+    new_content.situated_context = situated_context;
+  }
+
+  winston.debug("Update content. New content: ", new_content);
+
+  let updated_content;
+  try {
+    updated_content = await KB.findOneAndUpdate({ id_project, namespace: namespace_id, source }, new_content, { upsert: true, new: true }).lean().exec();
+  } catch (err) {
+    winston.error("Error updating content: ", err);
+    return res.status(500).send({ success: false, error: err });
+  }
+
+  const embedding = aiManager.normalizeEmbedding(namespace.embedding);
+  let webhook = apiUrl + '/webhook/kb/status?token=' + KB_WEBHOOK_TOKEN;
+  const situated_context_obj = normalizeSituatedContext(updated_content.situated_context);
+
+  const json = {
+    id: updated_content._id,
+    type: updated_content.type,
+    source: updated_content.source,
+    content: updated_content.content || "",
+    namespace: updated_content.namespace,
+    webhook: webhook,
+    hybrid: namespace.hybrid,
+    engine: namespace.engine || default_engine,
+    embedding: embedding,
+    ...(situated_context_obj && { situated_context: situated_context_obj }),
+    ...(updated_content.scrape_type && { scrape_type: updated_content.scrape_type }),
+    ...(updated_content.scrape_options && { parameters_scrape_type_4: updated_content.scrape_options }),
+    ...(updated_content.tags && { tags: updated_content.tags }),
+  }
+
+  winston.debug("json: ", json);
+
+  if (process.env.NODE_ENV === 'test') {
+    return res.status(200).send({ success: true, message: "Schedule scrape skipped in test environment", data: updated_content, schedule_json: json });
+  }
+
+  aiManager.scheduleScrape([json], namespace.hybrid);
+  return res.status(200).send(updated_content);
+
+})
+
+router.delete('/:kb_id', async (req, res) => {
+
+  let project_id = req.projectid;
+  let kb_id = req.params.kb_id;
+  winston.verbose("delete kb_id " + kb_id);
+
+  let kb = await KB.findOne({ id_project: project_id, _id: kb_id }).catch((err) => {
+    winston.warn("Unable to find kb. Error: ", err);
+    return res.status(500).send({ success: false, error: err })
+  })
+
+  if (!kb) {
+    winston.error("Unable to delete kb. Kb not found...")
+    return res.status(404).send({ success: false, error: "Content not found" })
+  }
+
+  let namespace_id = kb.namespace ?? project_id;
+
+  let namespace;
+  try {
+    namespace = await aiManager.checkNamespace(project_id, namespace_id);
+  } catch (err) {
+    let errorCode = err?.errorCode ?? 500;
+    return res.status(errorCode).send({ success: false, error: err.error });
+  }
+
+  if (kb.type === 'sitemap') {
+    try {
+      await aiManager.deleteSitemap(kb, namespace);
+      winston.info("Scheduled jobs for deleting sitemap");
+      //return res.status(200).send({ success: true, message: "Scheduled jobs for deleting sitemap" });
+    } catch (err) {
+      winston.error("Error deleting sitemap: ", err);
+      return res.status(500).send({ success: false, error: err });
+    }
+  }
+
+  let data = {
+    id: kb_id,
+    namespace: namespace_id
+  }
+
+  if (!data.namespace) {
+    data.namespace = project_id;
+  }
+
+  data.engine = namespace.engine || default_engine;
+  winston.verbose("/:delete_id data: ", data);
+
+  aiService.deleteIndex(data).then((resp) => {
+    winston.debug("delete resp: ", resp.data);
+    if (resp.data.success === true) {
+      KB.findByIdAndDelete(kb_id, (err, deletedKb) => {
+
+        if (err) {
+          winston.error("Delete kb error: ", err);
+          return res.status(500).send({ success: false, error: err });
+        }
+        res.status(200).send(deletedKb);
+      })
+
+    } else {
+      winston.verbose("resp.data: ", resp.data);
+
+      KB.findOneAndDelete({ _id: kb_id, status: { $in: [-1, 3, 4, 100, 300, 400] } }, (err, deletedKb) => {
+        if (err) {
+          winston.error("findOneAndDelete err: ", err);
+          return res.status(500).send({ success: false, error: "Unable to delete the content due to an error" })
+        }
+        else if (!deletedKb) {
+          winston.verbose("Unable to delete the content in indexing status")
+          return res.status(500).send({ success: false, error: "Unable to delete the content in indexing status" })
+        } else {
+          res.status(200).send(deletedKb);
+        }
+      })
+    }
+
+  }).catch((err) => {
+    let status = err.response?.status || 500;
+    res.status(status).send({ success: false, statusText: err.response.statusText, error: err.response.data.detail });
+  })
+
+})
+
+/**
+* ****************************************
+* Content Section - End
+* ****************************************
+*/
+
+
+module.exports = router;

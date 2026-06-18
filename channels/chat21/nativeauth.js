@@ -42,11 +42,12 @@ router.post('/createCustomToken', function (req, res) {
         const scope = [
             `rabbitmq.read:*/*/apps.${appid}.users.${userid}.*`,
             `rabbitmq.write:*/*/apps.${appid}.users.${userid}.*`,
+            `rabbitmq.write:*/*/apps.${appid}.outgoing.users.${userid}.*`,
             'rabbitmq.configure:*/*/*'
         ]
     
         const now = Math.round(new Date().getTime()/1000);
-        console.log("now: ", now)
+        // console.log("now: ", now)
         const exp = now + 60 * 60 * 24 * 30;
 
         var payload = {
@@ -76,7 +77,7 @@ router.post('/createCustomToken', function (req, res) {
             "kid": "tiledesk-key", //"legacy-token-key",
             "tiledesk_api_roles": "user"
         }
-        console.log("payload:\n", payload)
+        winston.debug("payload:\n", payload)
         var token = jwt.sign(
             payload,
             jwtSecret,

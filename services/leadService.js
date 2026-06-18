@@ -5,6 +5,8 @@ const uuidv4 = require('uuid/v4');
 const leadEvent = require('../event/leadEvent');
 var winston = require('../config/winston');
 var cacheUtil = require('../utils/cacheUtil');
+var cacheEnabler = require("../services/cacheEnabler");
+var phoneUtil = require('../utils/phoneUtil');
 
 
 class LeadService {
@@ -14,7 +16,7 @@ class LeadService {
     var that = this;
     return new Promise(function (resolve, reject) {
       return Lead.findOne({email: email, id_project: id_project})
-      .cache(cacheUtil.defaultTTL, id_project+":leads:email:"+email)
+      //@DISABLED_CACHE .cache(cacheUtil.defaultTTL, id_project+":leads:email:"+email)  //lead_cache
       .exec(function(err, lead)  {
           if (err) {
             return reject(err);
@@ -54,21 +56,31 @@ class LeadService {
 
 
 
-  createIfNotExistsWithLeadId(lead_id, fullname, email, id_project, createdBy, attributes, status) {
+  createIfNotExistsWithLeadId(lead_id, fullname, email, id_project, createdBy, attributes, status, phone) {
     var that = this;
     return new Promise(function (resolve, reject) {
       return Lead.findOne({lead_id: lead_id, id_project: id_project})
-        .cache(cacheUtil.defaultTTL, id_project+":leads:lead_id:"+lead_id)
+        //@DISABLED_CACHE .cache(cacheUtil.defaultTTL, id_project+":leads:lead_id:"+lead_id) //lead_cache
         .exec(function(err, lead)  {
           if (err) {
             winston.error("Error createIfNotExistsWithLeadId", err);
-            return resolve(that.createWitId(lead_id, fullname, email, id_project, createdBy, attributes, status));
+            return resolve(that.createWitId(lead_id, fullname, email, id_project, createdBy, attributes, status, phone));
           }
           if (!lead) {
-            return resolve(that.createWitId(lead_id, fullname, email, id_project, createdBy, attributes, status));
+            return resolve(that.createWitId(lead_id, fullname, email, id_project, createdBy, attributes, status, phone));
           }
-          winston.debug("lead already exists createIfNotExistsWithLeadId");
-          return resolve(lead);
+
+          winston.debug("lead.email: " + lead.email); 
+          winston.debug("email: " + email); 
+          
+          if (lead.email == email) {
+            winston.debug("lead already exists createIfNotExistsWithLeadId with the same email");
+            return resolve(lead);
+          } else {
+            winston.debug("lead already exists createIfNotExistsWithLeadId but with different email");
+            return resolve(that.updateWitId(lead_id, fullname, email, id_project, status, phone));
+          }
+          
       
       });
     });
@@ -100,8 +112,8 @@ class LeadService {
     });
   }
 
-  updateWitId(lead_id, fullname, email, id_project, status) {
-    winston.debug("lead_id: "+ lead_id);
+  updateWitId(lead_id, fullname, email, id_project, status, phone) {
+    winston.debug("updateWitId lead_id: "+ lead_id);
     winston.debug("fullname: "+ fullname);
     winston.debug("email: "+ email);
     winston.debug("id_project: "+ id_project);
@@ -113,7 +125,9 @@ class LeadService {
 
     update.fullname = fullname;
     update.email = email;
-    
+    if (phone !== undefined) {
+      update.phone = phoneUtil.normalizePhone(phone);
+    }
     if (status) {
       update.status = status;
     }
@@ -128,12 +142,15 @@ class LeadService {
 
       
         leadEvent.emit('lead.update', updatedLead);
+        leadEvent.emit('lead.email.update', updatedLead);
+        leadEvent.emit('lead.fullname.update', updatedLead);
+        leadEvent.emit('lead.fullname.email.update', updatedLead);
         return resolve(updatedLead);
       });
     });
   }
 
-  createWitId(lead_id, fullname, email, id_project, createdBy, attributes, status) {
+  createWitId(lead_id, fullname, email, id_project, createdBy, attributes, status, phone) {
 
     if (!createdBy) {
       createdBy = "system";
@@ -149,6 +166,7 @@ class LeadService {
               lead_id: lead_id,
               fullname: fullname,
               email: email,
+              phone: phoneUtil.normalizePhone(phone),
               attributes: attributes,
               status: status,
               id_project: id_project,

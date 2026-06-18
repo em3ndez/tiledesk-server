@@ -3,6 +3,8 @@ var Schema = mongoose.Schema;
 var routingConstants = require('../models/routingConstants');
 var winston = require('../config/winston');
 var TagSchema = require("../models/tag");
+var GroupMemberSchema = require("../models/groupMemberSchama");
+
 
 var DepartmentSchema = new Schema({
   id_bot: {
@@ -34,6 +36,7 @@ var DepartmentSchema = new Schema({
   id_group: {
     type: String,
   },
+  groups: [GroupMemberSchema],
   // used??
   online_msg: {
     type: String,
@@ -50,7 +53,7 @@ var DepartmentSchema = new Schema({
   tags: [TagSchema],
   status: {
     type: Number,
-    default: 1,
+    default: 1,     // 1: enabled; 0 hidden for widget; -1 hidden for the dashboard; 
     index: true
     // required: true
   },
@@ -89,7 +92,7 @@ var department = mongoose.model('department', DepartmentSchema);
 
 if (process.env.MONGOOSE_SYNCINDEX) {
   department.syncIndexes();
-  winston.info("department syncIndexes")
+  winston.verbose("department syncIndexes")
 }
 
 

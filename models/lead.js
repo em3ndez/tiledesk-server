@@ -60,7 +60,10 @@ var LeadSchema = new Schema({
     type: String,
     required: false
   },
-  tags: [TagSchema],
+  // tags: [TagSchema],
+  tags: [{
+    type: String
+  }],
   // aggiungi location e togli flat fields
   attributes: {
     type: Object,
@@ -85,6 +88,9 @@ var LeadSchema = new Schema({
     default: LeadConstants.NORMAL,  
     index: true
   }, 
+  properties: {
+    type: Object,
+  },
 },{
   timestamps: true
 }
@@ -96,12 +102,16 @@ var LeadSchema = new Schema({
 LeadSchema.index({fullname: 'text', email: 'text'},
  {"name":"lead_fulltext","default_language": defaultFullTextLanguage,"language_override": "dummy"}); // schema level
 
+  // suggested by atlas
+LeadSchema.index({status: 1, id_project: 1, createdAt: -1});
+
+
 
  var lead = mongoose.model('lead', LeadSchema);
 
  if (process.env.MONGOOSE_SYNCINDEX) {
   lead.syncIndexes();
-  winston.info("lead syncIndexes")
+  winston.verbose("lead syncIndexes")
 }
 
 module.exports = lead;

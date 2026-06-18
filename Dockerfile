@@ -1,4 +1,7 @@
-FROM node:12
+FROM node:18-bullseye
+
+RUN sed -i 's/stable\/updates/stable-security\/updates/' /etc/apt/sources.list
+
 
 RUN apt-get update
 
@@ -18,7 +21,7 @@ RUN if [ "$NPM_TOKEN" ]; \
 # where available (npm@5+)
 COPY package*.json ./
 
-RUN npm install
+RUN npm install --production
 
 RUN rm -f .npmrc
 

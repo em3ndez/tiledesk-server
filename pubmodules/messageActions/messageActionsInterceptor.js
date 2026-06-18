@@ -18,9 +18,11 @@ class MessageActionsInterceptor {
 
         var that = this;
         winston.info("MessageActionsInterceptor listener start ");
-        
-
-        messageEvent.on('message.create',  function(message) {          
+                    
+            //use .received to be sure for \close the message is sent to chat21 and after that you can archive the conversation. otherwise a race condition occurs with message.create if \close is sent by the bot      
+            messageEvent.on('message.received',  function(message) {          
+        // messageEvent.on('message.create',  function(message) {          
+            winston.debug("message.received ", message);
 
                 setImmediate(() => {
                   
@@ -78,6 +80,7 @@ class MessageActionsInterceptor {
              
              var request = message.request;
              
+
              if (request) {
                     //var botId = botEvent.getBotId(message);
                 var botId =  BotFromParticipant.getBotId(message);
@@ -108,6 +111,8 @@ class MessageActionsInterceptor {
                                 //     {"updateconversation" : false, messagelabel: {key: "TOUCHING_OPERATOR"}}
                                 // );
 
+                        }).catch((err) => {
+                            winston.error("(MessageActionsInterceptor) route request error ", err)
                         });
                 //    });
                 }   else {
@@ -126,6 +131,8 @@ class MessageActionsInterceptor {
                         //     {"updateconversation" : false, messagelabel: {key: "TOUCHING_OPERATOR"}}
                         // );
 
+                    }).catch((err) => {
+                        winston.error("(MessageActionsInterceptor) reroute request error ", err)
                     });
                 }   
               
@@ -139,19 +146,33 @@ class MessageActionsInterceptor {
 
         messageActionEvent.on("close", function(message) {
             
-            winston.info("called \\close action");
+            winston.verbose("called \\close action");
             
             var request = message.request;
             
             if (request) {
-                // closeRequestByRequestId(request_id, id_project, notify) {
-                requestService.closeRequestByRequestId(request.request_id, request.id_project );
+                // setTimeout(function() {
+                    // winston.info("delayed")
+                    
+                    // closeRequestByRequestId(request_id, id_project, skipStatsUpdate, notify, closed_by)
+                    const closed_by = message.sender;
+                    requestService.closeRequestByRequestId(request.request_id, request.id_project, false, true, closed_by ).catch((err) => {
+                      winston.error("(MessageActionsInterceptor) closeRequestByRequestId error", err);
+                    });
+                //   }, 1500);
+
+               
             }
                                                                                                                                                         
        });
         
-        
-
+        /*
+       messageActionEvent.on("actions", function(message) {
+        //    esegui custom action--->
+       });
+       messageActionEvent.on("events", function(message) {
+        // lancia event
+    });*/
 
        
 

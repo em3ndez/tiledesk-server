@@ -27,13 +27,18 @@ router.get('/', function (req, res, next) {
 
   // query.$text = {"$search": "question"};
 
+  // TODO ORDER BY SCORE
+  // return Faq.find(query,  {score: { $meta: "textScore" } }) 
+  // .sort( { score: { $meta: "textScore" } } ) //https://docs.mongodb.com/manual/reference/operator/query/text/#sort-by-text-search-score
+
+  
   return Faq.find(query).
     populate({path:'faq_kb'}).//, match: { trashed: { $in: [null, false] } }}).
     exec(function (err, faq) {
       winston.debug("GET FAQ ", faq);
 
       if (err) {
-        winston.debug('GET FAQ err ', err)
+        winston.error('GET FAQ err ', err)
         return next(err)
       };
       winston.debug('GET FAQ  ', faq)

@@ -34,6 +34,9 @@ var ProjectSchema = new Schema({
   operatingHours: {
     type: Object,
   },
+  timeSlots: {
+    type: Object,
+  },
   settings: {
     type: Object,
     default: function () {
@@ -68,6 +71,9 @@ var ProjectSchema = new Schema({
     type: String,
     select: false
   },
+  attributes: {
+    type: Object,
+  },
   // apiKey: { //You do want to block anonymous traffic. https://cloud.google.com/endpoints/docs/openapi/when-why-api-key#:~:text=API%20keys%20identify%20an%20application's,patterns%20in%20your%20API's%20traffic
   //   type: String,
   //   select: false,
@@ -101,6 +107,26 @@ var ProjectSchema = new Schema({
       return [new Channel({ name: 'chat21' })];
     }
   },
+  organization: {
+    type: String,
+  },
+  ipFilterEnabled:{
+    type: Boolean,
+    default: false
+  },
+  ipFilter: [{
+    type: String
+  }],
+  ipFilterDenyEnabled:{
+    type: Boolean,
+    default: false
+  },
+  ipFilterDeny: [{
+    type: String
+  }],
+  bannedUsers: [{
+     id: String, ip: String
+  }],
   // defaultLanguage: {
   //   type: String,
   //   required: true,

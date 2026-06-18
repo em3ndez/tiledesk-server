@@ -6,6 +6,9 @@ var mongoose = require('mongoose');
 var departmentService = require('../services/departmentService');
 var projectEvent = require("../event/projectEvent");
 var winston = require('../config/winston');
+const cacheEnabler = require("./cacheEnabler");
+const cacheUtil = require("../utils/cacheUtil");
+var RoleConstants = require("../models/roleConstants");
 
 class ProjectService {
 
@@ -31,7 +34,8 @@ class ProjectService {
           var newProject_user = new Project_user({
             id_project: savedProject._id,
             id_user: createdBy,
-            role: 'owner',
+            role: RoleConstants.OWNER,
+            roleType : RoleConstants.TYPE_AGENTS,   
             user_available: true,
             createdBy: createdBy,
             updatedBy: createdBy
@@ -71,6 +75,25 @@ class ProjectService {
     });
   }
 
+  async getCachedProject(id_project) {
+    return new Promise((resolve, reject) => {
+      let q = Project.findOne({ _id: id_project, status: 100 });
+      if (cacheEnabler.project) {
+        q.cache(cacheUtil.longTTL, "projects:id:" + id_project)  //project_cache
+        winston.debug('project cache enabled for /project detail');
+      }
+      q.exec( async (err, p) => {
+        if (err) {
+          reject(err);
+        }
+        if (!p) {
+          reject('Project not found')
+        }
+
+        resolve(p);
+      })
+    })
+  }
 
 
 }

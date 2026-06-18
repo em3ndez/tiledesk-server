@@ -3,15 +3,36 @@
 var departmentService = require('../services/departmentService');
 var Request = require("../models/request");
 var Project_user = require("../models/project_user");
+var Project = require("../models/project");
 var messageService = require('../services/messageService');
 const requestEvent = require('../event/requestEvent');
 const leadEvent = require('../event/leadEvent');
 var winston = require('../config/winston');
-const uuidv4 = require('uuid/v4');
 var RequestConstants = require("../models/requestConstants");
 var requestUtil = require("../utils/requestUtil");
 var cacheUtil = require("../utils/cacheUtil");
 var arrayUtil = require("../utils/arrayUtil");
+var cacheEnabler = require("../services/cacheEnabler");
+var UIDGenerator = require("../utils/UIDGenerator");
+const { TdCache } = require('../utils/TdCache');
+const { QuoteManager } = require('./QuoteManager');
+var configGlobal = require('../config/global');
+const projectService = require('./projectService');
+const axios = require("axios").default;
+
+let port = process.env.PORT || '3000';
+let TILEBOT_ENDPOINT = "http://localhost:" + port + "/modules/tilebot/ext/";;
+if (process.env.TILEBOT_ENDPOINT) {
+    TILEBOT_ENDPOINT = process.env.TILEBOT_ENDPOINT + "/ext/"
+}
+
+let tdCache = new TdCache({
+    host: process.env.CACHE_REDIS_HOST,
+    port: process.env.CACHE_REDIS_PORT,
+    password: process.env.CACHE_REDIS_PASSWORD
+});
+tdCache.connect();
+let qm = new QuoteManager({ tdCache: tdCache });
 
 class RequestService {
 
@@ -20,293 +41,356 @@ class RequestService {
   }
 
   listen() {
-    this.updateSnapshotLead();
+    // 12 marzo 2024 I disabled these two functions due to performance problems for a chatbot created by Sponziello "Community bots Sendinblue Hubspot Qapla)"
+    // this.updateSnapshotLead();
+    // this.sendMessageUpdateLead();
   }
-  updateSnapshotLead() {
-    leadEvent.on('lead.update', function(lead) {
-      setImmediate(() => {
-          winston.debug("updateSnapshotLead on lead.update ",  lead);
-          
-          Request.updateMany({lead: lead._id, id_project: lead.id_project}, {"$set": {"snapshot.lead": lead}}, function (err, updates) {
-            if (err) {
-                winston.error("Error updating requests updateSnapshotLead", err);
-                return 0;
-            }
-            winston.verbose("updateSnapshotLead updated for " + updates.nModified + " request")
-            requestEvent.emit('request.update.snapshot.lead',{lead:lead,updates:updates});
-            return;
-          });  
-          // Request.find({lead: lead._id, id_project: lead.id_project}, function(err, requests) {
 
-          //     if (err) {
-          //         winston.error("Error getting request by lead", err);
-          //         return 0;
-          //     }
-          //     if (!requests || (requests && requests.length==0)) {
-          //         winston.warn("No request found for lead id " +lead._id );
-          //         return 0;
-          //     }
-              
-          //     requests.forEach(function(request) {
-                
+      // 12 marzo 2024 I disabled these two functions due to performance problems for a chatbot created by Sponziello "Community bots Sendinblue Hubspot Qapla)"
+  // updateSnapshotLead() {
+  //   leadEvent.on('lead.update', function (lead) {
+  //     setImmediate(() => {
+  //       winston.debug("updateSnapshotLead on lead.update ", lead);
 
-          //     });
+  //       Request.updateMany({ lead: lead._id, id_project: lead.id_project }, { "$set": { "snapshot.lead": lead } }, function (err, updates) {
+  //         if (err) {
+  //           winston.error("Error updating requests updateSnapshotLead", err);
+  //           return 0;
+  //         }
+  //         winston.verbose("updateSnapshotLead updated for " + updates.nModified + " request")
+  //         requestEvent.emit('request.update.snapshot.lead', { lead: lead, updates: updates });
+  //         return;
+  //       });
+  //       // Request.find({lead: lead._id, id_project: lead.id_project}, function(err, requests) {
 
-            // });
+  //       //     if (err) {
+  //       //         winston.error("Error getting request by lead", err);
+  //       //         return 0;
+  //       //     }
+  //       //     if (!requests || (requests && requests.length==0)) {
+  //       //         winston.warn("No request found for lead id " +lead._id );
+  //       //         return 0;
+  //       //     }
+
+  //       //     requests.forEach(function(request) {
 
 
-          });
-        });
-  }
+  //       //     });
+
+  //       // });
+
+
+  //     });
+  //   });
+  // }
+
+
+  // 12 marzo 2024 I disabled these two functions due to performance problems for a chatbot created by Sponziello "Community bots Sendinblue Hubspot Qapla)"
+  // sendMessageUpdateLead() {
+  //   leadEvent.on('lead.fullname.email.update', function (lead) {
+  //     winston.debug("lead.fullname.email.update ");
+  //     // leadEvent.on('lead.update', function(lead) {
+
+  //     setImmediate(() => {
+  //       winston.debug("sendMessageUpdateLead on lead.update ", lead);
+
+  //       Request.find({ lead: lead._id, id_project: lead.id_project }, function (err, requests) {
+
+  //         if (err) {
+  //           winston.error("Error getting sendMessageUpdateLead request by lead", err);
+  //           return 0;
+  //         }
+  //         if (!requests || (requests && requests.length == 0)) {
+  //           winston.warn("sendMessageUpdateLead No request found for lead id " + lead._id);
+  //           return 0;
+  //         }
+
+  //         // winston.info("sendMessageUpdateLead requests ", requests);
+
+  //         requests.forEach(function (request) {
+
+  //           winston.debug("sendMessageUpdateLead request ", request);
+
+  //           // send(sender, senderFullname, recipient, text, id_project, createdBy, attributes, type, metadata, language)
+  //           messageService.send(
+  //             'system',
+  //             'Bot',
+  //             // lead.fullname,                                
+  //             request.request_id,
+  //             "Lead updated",
+  //             request.id_project,
+  //             'system',
+  //             {
+  //               subtype: "info/support",
+  //               "updateconversation": false,
+  //               messagelabel: { key: "LEAD_UPDATED" },
+  //               updateUserEmail: lead.email,
+  //               updateUserFullname: lead.fullname
+  //             },
+  //             undefined,
+  //             request.language
+
+  //           );
+
+  //         });
+
+  //       });
+
+  //     });
+  //   });
+  // }
+
+
   getAvailableAgentsCount(agents) {
-     
-      var project_users_available = agents.filter(function (projectUser) {
-        if (projectUser.user_available == true) {
-          return true;
-        }
-      });
-      winston.debug('++ AVAILABLE PROJECT USERS count ', project_users_available)
-  
-      if (project_users_available && project_users_available.length>0){
-        return project_users_available.length;
-      }else {
-        return 0;
-      }
 
-  
+    var project_users_available = agents.filter(function (projectUser) {
+      if (projectUser.user_available == true) {
+        return true;
+      }
+    });
+    winston.debug('++ AVAILABLE PROJECT USERS count ', project_users_available)
+
+    if (project_users_available && project_users_available.length > 0) {
+      return project_users_available.length;
+    } else {
+      return 0;
+    }
+
+
   }
 
-//change create with this
-  routeInternal (request, departmentid, id_project, nobot) {
-   var that = this;
+  //change create with this
+  routeInternal(request, departmentid, id_project, nobot) {
+    var that = this;
 
     return new Promise(function (resolve, reject) {
 
-      var context = {request: request};
+      var context = { request: request };
 
-          // getOperators(departmentid, projectid, nobot, disableWebHookCall, context)
-        return departmentService.getOperators(departmentid, id_project, nobot, undefined, context).then(function (result) {
+      // getOperators(departmentid, projectid, nobot, disableWebHookCall, context)
+      return departmentService.getOperators(departmentid, id_project, nobot, undefined, context).then(function (result) {
 
-          // winston.debug("getOperators", result);
+        // winston.debug("getOperators", result);
 
-          var assigned_at = undefined;          
-            
-          var status = RequestConstants.UNASSIGNED; 
-          var assigned_operator_id;
-          var participants = [];
-          var participantsAgents = [];
-          var participantsBots = [];
-          var hasBot = false;
+        var assigned_at = undefined;
 
-          if (result.operators && result.operators.length>0) {
-            assigned_operator_id = result.operators[0].id_user;
+        var status = RequestConstants.UNASSIGNED;
+        var assigned_operator_id;
+        var participants = [];
+        var participantsAgents = [];
+        var participantsBots = [];
+        var hasBot = false;
 
-            status =  RequestConstants.ASSIGNED;
+        if (result.operators && result.operators.length > 0) {
+          assigned_operator_id = result.operators[0].id_user;
 
-            var assigned_operator_idString = assigned_operator_id.toString();
-            participants.push(assigned_operator_idString);
+          status = RequestConstants.ASSIGNED;
+
+          var assigned_operator_idString = assigned_operator_id.toString();
+          participants.push(assigned_operator_idString);
+
+          // botprefix
+          if (assigned_operator_idString.startsWith("bot_")) {
+            hasBot = true;
 
             // botprefix
-            if (assigned_operator_idString.startsWith("bot_")) {            
-             hasBot = true;
-
-             // botprefix
-             var assigned_operator_idStringBot = assigned_operator_idString.replace("bot_","");
-             participantsBots.push(assigned_operator_idStringBot);
-            }else {
-             participantsAgents.push(assigned_operator_idString);
-             hasBot = false; //??
-            }
-
-            assigned_at = Date.now();            
-          }
-           winston.debug("routeInternal assigned_operator_id: "+ assigned_operator_id);
-           winston.debug("routeInternal status: "+ status);
-
-
-
-          //  cosi modifica la request originale forse devi fare il clone?????
-          request.status = status;
-
-          request.participants = participants;          
-          request.participantsAgents = participantsAgents;
-          request.participantsBots = participantsBots;
-          request.hasBot = hasBot;
-
-          request.department = result.department._id;
-          // request.agents = result.agents;
-          request.assigned_at = assigned_at;
-          request.waiting_time = undefined //reset waiting_time on reroute
-          
-          if (!request.snapshot) { //if used other methods than .create
-            request.snapshot = {}
+            var assigned_operator_idStringBot = assigned_operator_idString.replace("bot_", "");
+            participantsBots.push(assigned_operator_idStringBot);
+          } else {
+            participantsAgents.push(assigned_operator_idString);
+            hasBot = false; //??
           }
 
-          request.snapshot.department = result.department;
-          request.snapshot.agents = result.agents;
-          request.snapshot.availableAgentsCount = that.getAvailableAgentsCount(result.agents);
+          assigned_at = Date.now();
+        }
+        winston.debug("routeInternal assigned_operator_id: " + assigned_operator_id);
+        winston.debug("routeInternal status: " + status);
 
-              return resolve(request);
-                  
-               
-        }).catch(function(err){
-          return reject(err);
-        });
+
+
+        //  cosi modifica la request originale forse devi fare il clone?????
+        request.status = status;
+
+        request.participants = participants;
+        request.participantsAgents = participantsAgents;
+        request.participantsBots = participantsBots;
+        request.hasBot = hasBot;
+
+        request.department = result.department._id;
+        // request.agents = result.agents;
+        request.assigned_at = assigned_at;
+        request.waiting_time = undefined //reset waiting_time on reroute
+
+        //console.log("request.snapshot for ", request.request_id ," exists: ", request.snapshot ? "yes" : "no\n", new Date());
+        //console.log("request.snapshot.agents for ", request.request_id ," exists: ", request.snapshot?.agents ? "yes" : "no\n", new Date());
+        if (!request.snapshot) { //if used other methods than .create
+          request.snapshot = {}
+        }
+
+
+        request.snapshot.department = result.department;
+        request.snapshot.agents = result.agents;
+        request.snapshot.availableAgentsCount = that.getAvailableAgentsCount(result.agents);
+
+        return resolve(request);
+
+
+      }).catch(function (err) {
+        return reject(err);
+      });
 
 
     });
   }
-  
+
   // TODO  changePreflightByRequestId se un agente entra in request freflight true disabilitare add agente e reassing ma mettere un bottone removePreflight???
   // usalo no_populate
-  route(request_id, departmentid, id_project, nobot, no_populate) {
-   var that = this;
+  async route(request_id, departmentid, id_project, nobot, no_populate) {
 
-   return new Promise(function (resolve, reject) {
-     winston.debug("request_id:" + request_id);
-     winston.debug("departmentid:" + departmentid);
-     winston.debug("id_project:" + id_project);
-     winston.debug("nobot:"+ nobot);
+    try {
+      winston.debug("request_id:" + request_id);
+      winston.debug("departmentid:" + departmentid);
+      winston.debug("id_project:" + id_project);
+      winston.debug("nobot:" + nobot);
+      //winston.info("main_flow_cache_3 route");
 
-        return Request       
-        .findOne({request_id: request_id, id_project: id_project})     
-        .cache(cacheUtil.defaultTTL, id_project+":requests:request_id:"+request_id)     
-        .exec( function(err, request) {
+      // Find request
+      let query = Request.findOne({ request_id, id_project });
+      if (cacheEnabler.request) {
+        query = query.cache(cacheUtil.defaultTTL, id_project + ":requests:request_id:" + request_id + ":simple");
+        winston.debug('request cache enabled');
+      }
+      
+      const request = await query.exec();
 
-          if (err) {
-            winston.error(err);
-            return reject(err);
+      if (!request) {
+        throw new Error(`Request not found: ${request_id}`);
+      }
+
+      // Clone before route
+      const requestBeforeRoute = request.toObject();
+      const beforeParticipants = requestBeforeRoute.participants;
+      const beforeDepartmentId = requestBeforeRoute.department?.toString();
+
+      // Route internal
+      const routedRequest = await this.routeInternal(request, departmentid, id_project, nobot);
+
+      const afterDepartmentId = routedRequest.department?.toString();
+
+      // Case 1 - No changes
+      if (
+        requestBeforeRoute.status === routedRequest.status &&
+        beforeDepartmentId === afterDepartmentId &&
+        requestUtil.arraysEqual(beforeParticipants, routedRequest.participants)
+      ) {
+
+        winston.verbose(`Request ${request.request_id} routed to same status/participants`);
+  
+        if (routedRequest.attributes?.fully_abandoned === true) {
+          request.status = RequestConstants.ABANDONED;
+          request.attributes.fully_abandoned = true;
+          request.markModified("status");
+          request.markModified("attributes");
+  
+          try {
+            await request.save();
+            winston.verbose(`Status set to ABANDONED for request ${request._id}`);
+          } catch (err) {
+            winston.error("Error updating request to ABANDONED", err);
           }
-                   
+        }
 
-          // cambia var in let
+        /**
+         * TODO: Restore proper functioning
+         * Option commented on 03/12/2025 by Johnny in order to allows clients to receive the request populated
+         * in such case of Abandoned Request (Status 150)
+        */
+        // if (no_populate === "true" || no_populate === true) {
+        //   winston.debug("no_populate is true");
+        //   requestEvent.emit('request.update', request);
+        //   return request;
+        // }
+  
+        const requestComplete = await request
+          .populate("lead")
+          .populate("department")
+          .populate("participatingBots")
+          .populate("participatingAgents")
+          .populate({ path: "requester", populate: { path: "id_user" } })
+          .execPopulate();
+  
+        this.emitParticipantsEvents(
+          request,
+          requestComplete,
+          beforeParticipants
+        );
+  
+        return requestComplete;
+      }
 
-          //it is important to clone here
-          var requestBeforeRoute = Object.assign({}, request.toObject());
-          winston.debug("requestBeforeRoute",requestBeforeRoute);
+      
+      // Quota check
+      let project;
+      try {
+        project = await projectService.getCachedProject(id_project);
+      } catch (err) {
+        winston.warn("Error getting cached project, skip quota check", err);
+      }
 
-          var beforeParticipants = requestBeforeRoute.participants;
-          winston.debug("beforeParticipants: ", beforeParticipants);
+      const isTestConversation = request.attributes?.sourcePage?.includes("td_draft=true");
+      const isVoiceConversation = request.channel?.name === "voice-vxml";
+      const isStandardConversation = !isTestConversation && !isVoiceConversation;
 
-          return that.routeInternal(request, departmentid, id_project, nobot ).then(function(routedRequest){
+      if (isStandardConversation) {
+        const available = await qm.checkQuote(project, request, "requests");
+        if (!available) {
+          throw new Error(`Requests limits reached for project ${project._id}`);
+        }
+      }
 
-            winston.debug("after routeInternal");
-            // winston.info("requestBeforeRoute.participants " +requestBeforeRoute.request_id , requestBeforeRoute.participants);
-            // console.log("routedRequest.participants " +routedRequest.request_id , routedRequest.participants);
-            winston.debug("requestBeforeRoute.status:" + requestBeforeRoute.status);
-            winston.debug("routedRequest.status:" + routedRequest.status);
+      // Case 2 - Leaving TEMP status. After internal routing: STATUS changed from 50 to 100 or 200
+      if (requestBeforeRoute.status === RequestConstants.TEMP &&
+        [RequestConstants.ASSIGNED, RequestConstants.UNASSIGNED].includes(routedRequest.status) &&
+        isStandardConversation
+      ) {
+        requestEvent.emit("request.create.quote", { project, request });
+      }
 
-            let beforeDepartmentId;
-            if (requestBeforeRoute.department) { //requestBeforeRoute.department can be empty for internal ticket
-              beforeDepartmentId = requestBeforeRoute.department.toString();
-              winston.debug("beforeDepartmentId:"+ beforeDepartmentId);
-            }
-            
-            let afterDepartmentId;
-            if (routedRequest.department) {
-              afterDepartmentId = routedRequest.department.toString();
-              winston.debug("afterDepartmentId:"+ afterDepartmentId);
-            }
-                  
-            
-            if (requestBeforeRoute.status === routedRequest.status && 
-                 beforeDepartmentId === afterDepartmentId && 
-                requestUtil.arraysEqual(beforeParticipants, routedRequest.participants)) {
+      // Case 3 - Conversation opened through proactive message. After internal routing: STATUS changed from undefined to 100
+      if (
+        !requestBeforeRoute.status &&
+        routedRequest.status === RequestConstants.ASSIGNED &&
+        isStandardConversation
+      ) {
+        requestEvent.emit("request.create.quote", { project, request });
+      }
 
-              winston.verbose("Request " +request.request_id + " contains already the same participants at the same request status. Routed to the same participants");
+      // Save and populate
+      const savedRequest = await routedRequest.save();
 
-              if (no_populate==="true" || no_populate===true) {
-                winston.debug("no_populate is true");
-                return resolve(request);
-              }
-
-              return request
-              .populate('lead') 
-              .populate('department')
-              .populate('participatingBots')
-              .populate('participatingAgents')  
-              .populate({path:'requester',populate:{path:'id_user'}})
-              .execPopulate( function(err, requestComplete) {
-                return resolve(requestComplete);
-              });
-            }
-
-              //cacheinvalidation
-            return routedRequest.save(function(err, savedRequest) {
-              // https://stackoverflow.com/questions/54792749/mongoose-versionerror-no-matching-document-found-for-id-when-document-is-being
-              //return routedRequest.update(function(err, savedRequest) {
-              if (err) {                
-                winston.error('Error saving the request. ', {err:err, routedRequest:routedRequest});
-                return reject(err);
-              }
-              
-              winston.debug("after save");
-
-              return savedRequest
-              .populate('lead')
-              .populate('department')
-              .populate('participatingBots')
-              .populate('participatingAgents')  
-              .populate({path:'requester',populate:{path:'id_user'}})
-              .execPopulate( function(err, requestComplete) {
-
-              // return Request       //to populate correctly i must re-exec the query
-              // .findById(savedRequest.id)
-              // .populate('lead')
-              // .populate('department')
-              // .populate('participatingBots')
-              // .populate('participatingAgents')  
-              // .populate({path:'requester',populate:{path:'id_user'}})
-              // .exec( function(err, requestComplete) {
-             
-          
-              if (err) {
-                winston.error('Error populating the request.',err);
-                return reject(err);
-              }
-
-              winston.verbose("Request routed",requestComplete.toObject());
-            
-
-              var oldParticipants = beforeParticipants;
-              winston.debug("oldParticipants ", oldParticipants);
-
-              let newParticipants = requestComplete.participants;
-              winston.debug("newParticipants ", newParticipants);
-
-              var removedParticipants = oldParticipants.filter(d => !newParticipants.includes(d));
-              winston.debug("removedParticipants ", removedParticipants);
-
-              var addedParticipants = newParticipants.filter(d => !oldParticipants.includes(d));
-              winston.debug("addedParticipants ", addedParticipants);
-
-              
-              requestEvent.emit('request.update',requestComplete);
-              requestEvent.emit("request.update.comment", {comment:"REROUTE",request:requestComplete});
-              // requestEvent.emit('request.participants.update', {beforeRequest:request, request:requestComplete});
-              requestEvent.emit('request.participants.update', {beforeRequest:request, 
-                removedParticipants:removedParticipants, 
-                addedParticipants:addedParticipants,
-                request:requestComplete});
-
-              requestEvent.emit('request.department.update',requestComplete); //se req ha bot manda messaggio \welcome
-
-              winston.debug("here end");
-
-              return resolve(requestComplete);
-          });
+      const requestComplete = await savedRequest
+        .populate("lead")
+        .populate("department")
+        .populate("participatingBots")
+        .populate("participatingAgents")
+        .populate({ path: "requester", populate: { path: "id_user" } })
+        .execPopulate();
 
 
-              
-            });
+      this.emitParticipantsEvents(
+        request,
+        requestComplete,
+        beforeParticipants
+      );
 
-          }).catch(function(err) {
-            return reject(err);
-          });
+      requestEvent.emit("request.department.update", requestComplete);
 
-            
-          });
-    });
+      return requestComplete;
+
+    } catch (error) {
+      winston.error("Route error", { error, request_id, id_project });
+      throw error;
+    }
   }
 
 
@@ -316,265 +400,537 @@ class RequestService {
     return new Promise(function (resolve, reject) {
       // winston.debug("request_id", request_id);
       // winston.debug("newstatus", newstatus);
- 
-         return Request       
-         .findOne({request_id: request_id, id_project: id_project})
-         .cache(cacheUtil.defaultTTL, id_project+":requests:request_id:"+request_id)
-         .exec( function(err, request) {
- 
-           if (err) {
-             winston.error(err);
-             return reject(err);
-           }
-                 
-           winston.debug("here reroute1 ");
-           return that.route(request_id, request.department.toString(), id_project, nobot).then(function(routedRequest){
 
-            var endDate = new Date();
-            winston.verbose("Performance Request reroute in millis: " + endDate-startDate);
+      let q = Request
+        .findOne({ request_id: request_id, id_project: id_project });
 
-             return resolve(routedRequest);
-           }).catch(function(err) {
-            return reject(err);
-           });
-             
-           });
-     });
-   }
-   
-
-
-  createWithRequester(project_user_id, lead_id, id_project, first_text, departmentid, sourcePage, language, userAgent, status, createdBy, attributes, subject, preflight) {
-
-    var request_id = 'support-group-'+ id_project + "-" + uuidv4();
-    winston.debug("request_id: "+request_id);
-    
-    return this.createWithIdAndRequester(request_id, project_user_id, lead_id, id_project, first_text, departmentid, sourcePage, language, userAgent, status, createdBy, attributes, subject, preflight);
-  }
-
-  createWithIdAndRequester(request_id, project_user_id, lead_id, id_project, first_text, departmentid, sourcePage, language, userAgent, status, createdBy, attributes, subject, preflight, channel, location) {
-    
-    var request = {
-                    request_id:request_id, project_user_id:project_user_id, lead_id:lead_id, id_project:id_project,first_text:first_text,
-                    departmentid:departmentid, sourcePage:sourcePage, language:language, userAgent:userAgent, status:status, createdBy:createdBy,
-                    attributes:attributes, subject:subject, preflight:preflight, channel:channel, location:location 
-                  };
-
-    return this.create(request);
-  };  
-
-  create(request) {
-
-    var startDate = new Date();
-
-    var request_id = request.request_id;
-    var project_user_id = request.project_user_id;
-    var lead_id = request.lead_id;
-    var id_project = request.id_project;
-
-    var first_text = request.first_text;
-    //removed for ticket
-    // // lascia che sia nico a fare il replace...certo tu devi fare il test che tutto sia ok quindi dopo demo
-    // var first_text;  
-    // if (request.first_text) {  //first_text can be empty for type image
-    //   first_text = request.first_text.replace(/[\n\r]+/g, ' '); //replace new line with space
-    // }
-     
-    var departmentid = request.departmentid;
-    var sourcePage = request.sourcePage;
-    var language = request.language;
-    var userAgent = request.userAgent;
-    var status = request.status;
-    var createdBy = request.createdBy;
-    var attributes = request.attributes;
-    var subject = request.subject;
-    var preflight = request.preflight;
-    var channel = request.channel;
-    var location = request.location;
-    var participants = request.participants || [];
-
-    var tags = request.tags;
-    var notes = request.notes;
-
-    if (!departmentid) {
-      departmentid ='default';
-    }
-
-    if (!createdBy) {
-      if (project_user_id) {
-        createdBy = project_user_id;
-      }else {
-        createdBy = "system";
+      if (cacheEnabler.request) {
+        q.cache(cacheUtil.defaultTTL, id_project + ":requests:request_id:" + request_id + ":simple")      //request_cache
+        winston.debug('request cache enabled');
       }
-      
-    }
-    
-    var that = this;
 
-    return new Promise(async (resolve, reject) => {
+      return q.exec(function (err, request) {
 
-        var context = {request: {request_id:request_id, project_user_id:project_user_id, lead_id:lead_id, id_project:id_project, 
-          first_text:first_text, departmentid:departmentid, sourcePage:sourcePage, language:language, userAgent:userAgent, status:status, 
-          createdBy:createdBy, attributes:attributes, subject:subject, preflight: preflight, channel: channel, location: location,
-          participants:participants, tags: tags, notes:notes}};
+        if (err) {
+          winston.error(err);
+          return reject(err);
+        }
 
-          winston.debug("context",context);
+        winston.debug('request cache simple 3', request);
 
-           var participantsAgents = [];
-           var participantsBots = [];
-           var hasBot = false;
+        winston.debug("here reroute1 ");
 
-           var dep_id = undefined;
-
-           var assigned_at = undefined;          
-          
-           var agents = [];
-
-           var snapshot = {};
-
-          //  getOperators(departmentid, projectid, nobot, disableWebHookCall, context) {
-           var result = await departmentService.getOperators(departmentid, id_project, false, undefined, context);
-           winston.debug("getOperators", result);
- 
-          
-           agents = result.agents;
+        //  Cannot read property 'toString' of undefined at /usr/src/app/services/requestService.js:404:61 at /usr/src/app/node_modules/cachegoose/out/extend-query.js:44:13 at Command.cb [as callback] (/usr/src/app/node_modules/cacheman-redis/node/index.js:142:9) at normal_reply (/usr/src/app/node_modules/redis/index.js:655:21) at RedisClient.return_reply (/usr/src/app/node_modules/redis/index.js:753:9) at JavascriptRedisParser.returnReply (/usr/src/app/node_modules/redis/index.js:138:18) at JavascriptRedisParser.execute (/usr/src/app/node_modules/redis-parser/lib/parser.js:544:14) at Socket.<anonymous> (/usr/src/app/node_modules/redis/index.js:219:27) at Socket.emit (events.js:314:20) at addChunk (_stream_readable.js:297:12) at readableAddChunk (_stream_readable.js:272:9) at Socket.Readable.push (_stream_readable.js:213:10) at TCP.onStreamRead (internal/stream_base_commons.js:188:23) {"date":"Tue Mar 21 2023 18:45:47 GMT+0000 (Coordinated Unive
+        if (request.department === undefined) {
+          winston.error("Request with request_id " + request_id + "  has empty department. So I can't reroute");
+          return reject("Request with request_id " + request_id + "  has empty department. So I can't reroute");
+        }
 
 
-          if (status == 50) {
-                // skip assignment
-                if (participants.length == 0 ) {
-                  dep_id = result.department._id;
-                }
-          } else {
-         
-            if (participants.length == 0 ) {
-              if (result.operators && result.operators.length>0) {            
-                participants.push(result.operators[0].id_user.toString());
-              }
-              // for preflight it is important to save agents in req for trigger. try to optimize it
-              dep_id = result.department._id;
+        return that.route(request_id, request.department.toString(), id_project, nobot).then(function (routedRequest) {
 
-            }
+          var endDate = new Date();
+          winston.verbose("Performance Request reroute in millis: " + endDate - startDate);
 
-            if (participants.length > 0) {
-            
-              status =  RequestConstants.ASSIGNED;
-  
-              // botprefix
-              if (participants[0].startsWith("bot_")) {
-  
-                hasBot = true;
-                winston.debug("hasBot:"+hasBot);
-  
-                // botprefix
-                var assigned_operator_idStringBot = participants[0].replace("bot_","");
-                winston.debug("assigned_operator_idStringBot:"+assigned_operator_idStringBot);
-  
-                participantsBots.push(assigned_operator_idStringBot);
-  
-               } else {
+          return resolve(routedRequest);
+        }).catch(function (err) {
+          return reject(err);
+        });
 
-                participantsAgents.push(participants[0]);
-
-               }
-  
-               assigned_at = Date.now();
-
-            } else {
-
-               status = RequestConstants.UNASSIGNED; 
-
-            }
-
-          }
-
-        
-           
-
-          if (dep_id) {
-            snapshot.department = result.department;
-          }
-          
-          snapshot.agents = agents;
-          snapshot.availableAgentsCount = that.getAvailableAgentsCount(agents);
-
-          if (request.requester) {      //.toObject()????
-            snapshot.requester = request.requester;
-          }
-          if (request.lead) {
-            snapshot.lead = request.lead;
-          }          
-
-           // winston.debug("assigned_operator_id", assigned_operator_id);
-            // winston.debug("req status", status);
-
-              var newRequest = new Request({
-                request_id: request_id,
-                requester: project_user_id,
-                lead: lead_id,
-                first_text: first_text,
-                subject: subject,
-                status: status,
-                participants: participants,
-                participantsAgents:participantsAgents,
-                participantsBots: participantsBots,
-                hasBot: hasBot,
-                department: dep_id,          
-                // agents: agents,                
-            
-                //others
-                sourcePage: sourcePage,
-                language: language,
-                userAgent: userAgent,
-                assigned_at : assigned_at,
-
-                attributes: attributes,
-                //standard
-                id_project: id_project,
-                createdBy: createdBy,
-                updatedBy: createdBy,
-                preflight: preflight,
-                channel: channel,
-                location: location,
-                snapshot: snapshot,
-                tags: tags,
-                notes: notes
-              });
-                    
-
-              winston.debug('newRequest.',newRequest);
-
-          
-              //cacheinvalidation
-              return newRequest.save(function(err, savedRequest) {
-                  if (err) {
-                    winston.error('RequestService error for method createWithIdAndRequester for newRequest' + JSON.stringify(newRequest), err);
-                    return reject(err);
-                  }
-              
-              
-                  winston.verbose("Request created",savedRequest.toObject());
-
-                  var endDate = new Date();
-                  winston.verbose("Performance Request created in millis: " + endDate-startDate);
-                                    
-                  requestEvent.emit('request.create.simple', savedRequest);
-                  
-                  return resolve(savedRequest);
-                  
-                });
-            // }).catch(function(err){
-            //   return reject(err);
-            // });
-
-
+      });
     });
   }
 
 
 
+  createWithRequester(project_user_id, lead_id, id_project, first_text, departmentid, sourcePage, language, userAgent, status, createdBy, attributes, subject, preflight) {
+
+    var request_id = 'support-group-' + id_project + "-" + UIDGenerator.generate();
+    winston.debug("request_id: " + request_id);
+
+    return this.createWithIdAndRequester(request_id, project_user_id, lead_id, id_project, first_text, departmentid, sourcePage, language, userAgent, status, createdBy, attributes, subject, preflight);
+  }
+
+  createWithIdAndRequester(request_id, project_user_id, lead_id, id_project, first_text, departmentid, sourcePage, language, userAgent, status, createdBy, attributes, subject, preflight, channel, location) {
+
+    var request = {
+      request_id: request_id, project_user_id: project_user_id, lead_id: lead_id, id_project: id_project, first_text: first_text,
+      departmentid: departmentid, sourcePage: sourcePage, language: language, userAgent: userAgent, status: status, createdBy: createdBy,
+      attributes: attributes, subject: subject, preflight: preflight, channel: channel, location: location
+    };
+
+    return this.create(request);
+  };
+
+  async create(request) {
+    const createdAt = request.createdAt || new Date();
+
+    let {
+      request_id,
+      project_user_id,
+      lead_id,
+      id_project,
+      first_text,
+      sourcePage,
+      language,
+      userAgent,
+      status,
+      attributes,
+      subject,
+      preflight,
+      channel,
+      location,
+      participants = [],
+      tags,
+      notes,
+      priority,
+      auto_close,
+      followers,
+      contact
+    } = request;
+
+    let departmentid = request.departmentid || 'default';
+    let createdBy = request.createdBy || project_user_id || "system";
+
+    // Utils and flags
+    let payload;
+    let isTestConversation = false;
+    let isVoiceConversation = false;
+    let isStandardConversation = false;
+
+    const context = {
+      request: {
+        request_id, project_user_id, lead_id, id_project,
+        first_text, departmentid, sourcePage, language, userAgent, status,
+        createdBy, attributes, subject, preflight, channel, location,
+        participants,tags,notes,priority,auto_close,followers,contact
+      }
+    };
+
+    winston.debug("context: ", context);
+
+    // Initial assignment
+    let agents = [];
+    let participantsAgents = [];
+    let participantsBots = [];
+    let hasBot = false;
+    let dep_id;
+    let assigned_at;
+    let snapshot = {};
+
+    // Getting operators
+    let result;
+    try {
+      result = await departmentService.getOperators(departmentid, id_project, false, undefined, context);
+      winston.debug("Get operators result: ", result);
+    } catch (err) {
+      throw new Error("Error getting operators", { cause: err });
+    }
+
+    agents = result.agents;
+
+    // Status and quote management
+    if (status === RequestConstants.TEMP) {
+      // Skip assignment
+      if (participants.length === 0) {
+        dep_id = result.department._id;
+      }
+    }
+    else {
+      
+      let project;
+      try {
+        project = await projectService.getCachedProject(id_project);
+      } catch (err) {
+        throw new Error("Error getting project", { cause: err });
+      }
+
+      if (!project) {
+        winston.error(`Project not found for id_project: ${id_project}`);
+        throw new Error(`Project not found for id_project: ${id_project}`);
+      }
+
+      payload = { project, request };
+
+      // Test conversation
+      if (attributes?.sourcePage?.includes("td_draft=true")) {
+        winston.verbose("is a test conversation --> skip quote availability check");
+        isTestConversation = true;
+      }
+
+      // Voice conversation
+      else if (channel?.name === "voice-vxml") {
+        isVoiceConversation = true;
+        const available = await qm.checkQuote(project, request, "voice_duration");
+        if (!available) {
+          winston.info(`Voice duration limits reached for project ${id_project}`);
+          throw new Error(`Voice duration limits reached for project ${id_project}`);
+        }
+      }
+
+      // Standard conversation
+      else {
+        isStandardConversation = true;
+        const available = await qm.checkQuote(project, request, "requests");
+        if (!available) {
+          winston.info(`Requests limits reached for project ${project._id}`);
+          throw new Error(`Requests limits reached for project ${project._id}`);
+        }
+      }
+
+      // Assignment
+      if (participants.length === 0) {
+        if (result.operators?.length > 0) {
+          participants.push(result.operators[0].id_user.toString());
+        }
+        dep_id = result.department._id;
+      }
+
+      if (participants.length > 0) {
+        status = RequestConstants.ASSIGNED;
+
+        const firstParticipant = participants[0];
+
+        if (firstParticipant.startsWith("bot_")) {
+          hasBot = true;
+          const botId = firstParticipant.replace("bot_", "");
+          participantsBots.push(botId);
+        } else {
+          participantsAgents.push(firstParticipant);
+        }
+
+        assigned_at = Date.now();
+      } else {
+        status = RequestConstants.UNASSIGNED;
+      }
+    }
+
+    // Snapshot
+    if (dep_id) {
+      snapshot.department = result.department;
+    }
+    
+    snapshot.availableAgentsCount = this.getAvailableAgentsCount(agents);
+    
+    if (request.requester) {
+      snapshot.requester = request.requester;
+    }
+    if (request.lead) {
+      snapshot.lead = request.lead;
+    }
+
+    // Create request
+    const newRequest = new Request({
+      request_id,
+      requester: project_user_id,
+      lead: lead_id,
+      first_text,
+      subject,
+      status,
+      participants,
+      participantsAgents,
+      participantsBots,
+      hasBot,
+      department: dep_id,
+      sourcePage,
+      language,
+      userAgent,
+      assigned_at,
+      attributes,
+      id_project,
+      createdBy,
+      updatedBy: createdBy,
+      preflight,
+      channel,
+      location,
+      tags,
+      notes,
+      priority,
+      auto_close,
+      followers,
+      createdAt,
+      snapshot,
+      contact,
+    })
+
+    if (isTestConversation) {
+      newRequest.draft = true;
+    }
+
+    winston.debug('newRequest.', newRequest);
+    //winston.info("main_flow_cache_ requestService create");
+
+    // Save request
+    try {
+      const savedRequest = await newRequest.save();
+      winston.debug("Request created", savedRequest.toObject());
+
+      /**
+       * Se non faccio findOne usando la cache adesso, quando verrà eseguita la query in reroute() la request non ha il department.
+       */
+      let q = Request.findOne({ request_id, id_project });
+      if (cacheEnabler.request) {
+        q.cache(cacheUtil.defaultTTL, id_project + ":requests:request_id:" + request_id + ":simple");
+        winston.debug('request cache enabled');
+      }
+      await q.exec();
+
+      snapshot.agents = agents; 
+      requestEvent.emit("request.create.simple", savedRequest, snapshot);
+
+      if (isStandardConversation) {
+        requestEvent.emit("request.create.quote", payload);
+      }
+
+      // Emit event to update snapshot in queue
+      // if (Object.keys(snapshot).length > 0) {
+      //   requestEvent.emit("request.snapshot.update", {
+      //     request: savedRequest,
+      //     snapshot: snapshot
+      //   });
+      // }
+
+      return savedRequest;
+
+    } catch (err) {
+      winston.error(`RequestService error on save request ${newRequest.request_id}`, err);
+      throw new Error("RequestService error on save request", { cause: err });
+    }
+
+  }
+
+  // DEPRECATED
+  // async create(request) {
+
+  //   if (!request.createdAt)  {
+  //     request.createdAt = new Date();
+  //   }
+
+  //   var request_id = request.request_id;
+  //   var project_user_id = request.project_user_id;
+  //   var lead_id = request.lead_id;
+  //   var id_project = request.id_project;
+  //   var first_text = request.first_text;
+  //   var departmentid = request.departmentid;
+  //   var sourcePage = request.sourcePage;
+  //   var language = request.language;
+  //   var userAgent = request.userAgent;
+  //   var status = request.status;
+  //   var createdBy = request.createdBy;
+  //   var attributes = request.attributes;
+  //   var subject = request.subject;
+  //   var preflight = request.preflight;
+  //   var channel = request.channel;
+  //   var location = request.location;
+  //   var participants = request.participants || [];
+  //   var tags = request.tags;
+  //   var notes = request.notes;
+  //   var priority = request.priority;
+  //   var auto_close = request.auto_close;
+  //   var followers = request.followers;
+  //   let createdAt = request.createdAt;
+
+  //   if (!departmentid) {
+  //     departmentid = 'default';
+  //   }
+
+  //   if (!createdBy) {
+  //     if (project_user_id) {
+  //       createdBy = project_user_id;
+  //     } else {
+  //       createdBy = "system";
+  //     }
+  //   }
+
+  //   // Utils
+  //   let payload;
+  //   let isTestConversation = false;
+  //   let isVoiceConversation = false;
+  //   let isStandardConversation = false;
+  //   var that = this;
+
+  //   return new Promise( async (resolve, reject) => {
+  //     var context = {
+  //       request: {
+  //         request_id: request_id, project_user_id: project_user_id, lead_id: lead_id, id_project: id_project,
+  //         first_text: first_text, departmentid: departmentid, sourcePage: sourcePage, language: language, userAgent: userAgent, status: status,
+  //         createdBy: createdBy, attributes: attributes, subject: subject, preflight: preflight, channel: channel, location: location,
+  //         participants: participants, tags: tags, notes: notes,
+  //         priority: priority, auto_close: auto_close, followers: followers
+  //       }
+  //     };
+  //     winston.debug("context", context);
+
+  //     var participantsAgents = [];
+  //     var participantsBots = [];
+  //     var hasBot = false;
+  //     var dep_id = undefined;
+  //     var assigned_at = undefined;
+  //     var agents = [];
+  //     var snapshot = {};
+
+  //     try {
+  //       // (method) DepartmentService.getOperators(departmentid: any, projectid: any, nobot: any, disableWebHookCall: any, context: any): Promise<any>
+  //       var result = await departmentService.getOperators(departmentid, id_project, false, undefined, context);
+  //       winston.debug("getOperators", result);
+
+  //     } catch (err) {
+  //       return reject(err);
+  //     }
+
+  //     agents = result.agents;
+
+  //     if (status == 50) {
+  //       // skip assignment
+  //       if (participants.length == 0) {
+  //         dep_id = result.department._id;
+  //       }
+  //     } else {
+
+  //       let project = await projectService.getCachedProject(id_project).catch((err) => {
+  //         winston.warn("Error getting cached project. Skip conversation quota check.")
+  //         winston.warn("Getting cached project error:  ", err)
+  //       })
+
+  //       payload = {
+  //         project: project,
+  //         request: request
+  //       }
+
+  //       if (attributes && attributes.sourcePage && (attributes.sourcePage.indexOf("td_draft=true") > -1)) {
+  //         winston.verbose("is a test conversation --> skip quote availability check")
+  //         isTestConversation = true;
+  //       }
+  //       else if (channel && (channel.name === 'voice-vxml')) {
+  //         isVoiceConversation = true;
+  //         let available = await qm.checkQuote(project, request, 'voice_duration');
+  //         if (available === false) {
+  //           winston.info("Voice duration limits reached for project " + project._id);
+  //           return reject("Voice duration limits reached for project " + project._id);
+  //         }
+  //       }
+  //       else {
+  //         isStandardConversation = true;
+  //         let available = await qm.checkQuote(project, request, 'requests');
+  //         if (available === false) {
+  //           winston.info("Requests limits reached for project " + project._id)
+  //           return reject("Requests limits reached for project " + project._id);
+  //         }
+  //       }
 
 
+  //       if (participants.length == 0) {
+  //         if (result.operators && result.operators.length > 0) {
+  //           participants.push(result.operators[0].id_user.toString());
+  //         }
+  //         // for preflight it is important to save agents in req for trigger. try to optimize it
+  //         dep_id = result.department._id;
+  //       }
+
+  //       if (participants.length > 0) {
+  //         status = RequestConstants.ASSIGNED;
+  //         // botprefix
+  //         if (participants[0].startsWith("bot_")) {
+
+  //           hasBot = true;
+  //           winston.debug("hasBot:" + hasBot);
+
+  //           // botprefix
+  //           var assigned_operator_idStringBot = participants[0].replace("bot_", "");
+  //           winston.debug("assigned_operator_idStringBot:" + assigned_operator_idStringBot);
+
+  //           participantsBots.push(assigned_operator_idStringBot);
+
+  //         } else {
+
+  //           participantsAgents.push(participants[0]);
+
+  //         }
+
+  //         assigned_at = Date.now();
+
+  //       } else {
+  //         status = RequestConstants.UNASSIGNED;
+  //       }
+  //     }
+
+  //     if (dep_id) {
+  //       snapshot.department = result.department;
+  //     }
+
+  //     snapshot.agents = agents;
+  //     snapshot.availableAgentsCount = that.getAvailableAgentsCount(agents);
+
+  //     if (request.requester) {
+  //       snapshot.requester = request.requester;
+  //     }
+  //     if (request.lead) {
+  //       snapshot.lead = request.lead;
+  //     }
+
+  //     var newRequest = new Request({
+  //       request_id: request_id,
+  //       requester: project_user_id,
+  //       lead: lead_id,
+  //       first_text: first_text,
+  //       subject: subject,
+  //       status: status,
+  //       participants: participants,
+  //       participantsAgents: participantsAgents,
+  //       participantsBots: participantsBots,
+  //       hasBot: hasBot,
+  //       department: dep_id,
+  //       // agents: agents,                
+  //       //others
+  //       sourcePage: sourcePage,
+  //       language: language,
+  //       userAgent: userAgent,
+  //       assigned_at: assigned_at,
+  //       attributes: attributes,
+  //       //standard
+  //       id_project: id_project,
+  //       createdBy: createdBy,
+  //       updatedBy: createdBy,
+  //       preflight: preflight,
+  //       channel: channel,
+  //       location: location,
+  //       //snapshot: snapshot,
+  //       tags: tags,
+  //       notes: notes,
+  //       priority: priority,
+  //       auto_close: auto_close,
+  //       followers: followers,
+  //       createdAt: createdAt
+  //     });
+
+  //     if (isTestConversation) {
+  //       newRequest.draft = true;
+  //     }
+
+  //     winston.debug('newRequest.', newRequest);
+
+  //     //cacheinvalidation
+  //     return newRequest.save( async function (err, savedRequest) {
+
+  //       if (err) {
+  //         winston.error('RequestService error for method createWithIdAndRequester for newRequest' + JSON.stringify(newRequest), err);
+  //         return reject(err);
+  //       }
+  //       winston.debug("Request created", savedRequest.toObject());
+
+  //       requestEvent.emit('request.create.simple', savedRequest);
+
+  //       if (isStandardConversation) {
+  //         requestEvent.emit('request.create.quote', payload);;
+  //       }
+
+  //       return resolve(savedRequest);
+
+  //     });
+  //   })
+  // }
+
+  
   //DEPRECATED. USED ONLY IN SAME TESTS
   createWithId(request_id, requester_id, id_project, first_text, departmentid, sourcePage, language, userAgent, status, createdBy, attributes) {
 
@@ -582,117 +938,121 @@ class RequestService {
 
 
     if (!departmentid) {
-      departmentid ='default';
+      departmentid = 'default';
     }
 
     if (!createdBy) {
       createdBy = requester_id;
     }
-    
+
     var that = this;
 
     return new Promise(function (resolve, reject) {
 
-      var context = {request: {request_id:request_id, requester_id:requester_id, id_project:id_project, 
-        first_text:first_text, departmentid:departmentid, sourcePage:sourcePage, language:language, userAgent:userAgent, status:status, 
-        createdBy:createdBy, attributes:attributes}};
+      var context = {
+        request: {
+          request_id: request_id, requester_id: requester_id, id_project: id_project,
+          first_text: first_text, departmentid: departmentid, sourcePage: sourcePage, language: language, userAgent: userAgent, status: status,
+          createdBy: createdBy, attributes: attributes
+        }
+      };
 
-                  // getOperators(departmentid, projectid, nobot, disableWebHookCall, context)
+      // getOperators(departmentid, projectid, nobot, disableWebHookCall, context)
 
-        return departmentService.getOperators(departmentid, id_project, false, undefined, context).then(function (result) {
+      return departmentService.getOperators(departmentid, id_project, false, undefined, context).then(function (result) {
 
-          // winston.debug("getOperators", result);
+        // winston.debug("getOperators", result);
 
-          var status =  RequestConstants.UNASSIGNED;
-          var assigned_operator_id;
-          var participants = [];
-          var participantsAgents = [];
-          var participantsBots = [];
-          var hasBot = false;
+        var status = RequestConstants.UNASSIGNED;
+        var assigned_operator_id;
+        var participants = [];
+        var participantsAgents = [];
+        var participantsBots = [];
+        var hasBot = false;
 
-          var assigned_at = undefined;
-          if (result.operators && result.operators.length>0) {
-            assigned_operator_id = result.operators[0].id_user;
-            status =  RequestConstants.ASSIGNED;
+        var assigned_at = undefined;
+        if (result.operators && result.operators.length > 0) {
+          assigned_operator_id = result.operators[0].id_user;
+          status = RequestConstants.ASSIGNED;
 
-            var assigned_operator_idString = assigned_operator_id.toString();
-            participants.push(assigned_operator_idString);
+          var assigned_operator_idString = assigned_operator_id.toString();
+          participants.push(assigned_operator_idString);
+
+          // botprefix
+          if (assigned_operator_idString.startsWith("bot_")) {
+            hasBot = true;
 
             // botprefix
-            if (assigned_operator_idString.startsWith("bot_")) {
-             hasBot = true;
+            var assigned_operator_idStringBot = assigned_operator_idString.replace("bot_", "");
+            winston.debug("assigned_operator_idStringBot:" + assigned_operator_idStringBot);
+            participantsBots.push(assigned_operator_idStringBot);
 
-             // botprefix
-             var assigned_operator_idStringBot = assigned_operator_idString.replace("bot_","");
-             winston.debug("assigned_operator_idStringBot:"+assigned_operator_idStringBot);
-             participantsBots.push(assigned_operator_idStringBot);
-
-            }else {
-             participantsAgents.push(assigned_operator_idString);
-            }
-            assigned_at = Date.now();
+          } else {
+            participantsAgents.push(assigned_operator_idString);
           }
-          // winston.debug("assigned_operator_id", assigned_operator_id);
-          // winston.debug("status", status);
+          assigned_at = Date.now();
+        }
+        // winston.debug("assigned_operator_id", assigned_operator_id);
+        // winston.debug("status", status);
 
-              var newRequest = new Request({
-                request_id: request_id,
-                requester_id: requester_id,
-                first_text: first_text,
-                status: status,
-                participants: participants,
-                participantsAgents:participantsAgents,
-                participantsBots: participantsBots,
-                hasBot:hasBot,
-                department: result.department._id,                           
-                agents: result.agents,
-                //availableAgents: result.available_agents,
+        var newRequest = new Request({
+          request_id: request_id,
+          requester_id: requester_id,
+          first_text: first_text,
+          status: status,
+          participants: participants,
+          participantsAgents: participantsAgents,
+          participantsBots: participantsBots,
+          hasBot: hasBot,
+          department: result.department._id,
+          agents: result.agents,
+          //availableAgents: result.available_agents,
 
-                // assigned_operator_id:  result.assigned_operator_id,
-            
-                //others
-                sourcePage: sourcePage,
-                language: language,
-                userAgent: userAgent,
-                assigned_at:assigned_at,
-                attributes: attributes,
-                //standard
-                id_project: id_project,
-                createdBy: createdBy,
-                updatedBy: createdBy
-              });
-                    
+          // assigned_operator_id:  result.assigned_operator_id,
 
-              // winston.debug('newRequest.',newRequest);
+          //others
+          sourcePage: sourcePage,
+          language: language,
+          userAgent: userAgent,
+          assigned_at: assigned_at,
+          attributes: attributes,
+          //standard
+          id_project: id_project,
+          createdBy: createdBy,
+          updatedBy: createdBy
+        });
 
 
-          
-              //cacheinvalidation
-              return newRequest.save(function(err, savedRequest) {
-                  if (err) {
-                    winston.error('RequestService error for method createWithId for newRequest' + JSON.stringify(newRequest), err);
-                    return reject(err);
-                  }
-              
-              
-                  winston.verbose("Request created",savedRequest.toObject());
-                                
-                  
-                  requestEvent.emit('request.create.simple',savedRequest);
-                  
-                  return resolve(savedRequest);
-                  
-                });
-            }).catch(function(err){
-              return reject(err);
-            });
+        // winston.debug('newRequest.',newRequest);
+
+
+
+        //cacheinvalidation
+        return newRequest.save(function (err, savedRequest) {
+          if (err) {
+            winston.error('RequestService error for method createWithId for newRequest' + JSON.stringify(newRequest), err);
+            return reject(err);
+          }
+
+
+          winston.verbose("Request created", savedRequest.toObject());
+
+
+          requestEvent.emit('request.create.simple', savedRequest);
+
+          return resolve(savedRequest);
+
+        });
+      }).catch(function (err) {
+        return reject(err);
+      });
 
 
     });
 
-    
-    
-    
+
+
+
 
   }
 
@@ -700,29 +1060,31 @@ class RequestService {
   changeStatusByRequestId(request_id, id_project, newstatus) {
 
     return new Promise(function (resolve, reject) {
-     // winston.debug("request_id", request_id);
-     // winston.debug("newstatus", newstatus);
+      // winston.debug("request_id", request_id);
+      // winston.debug("newstatus", newstatus);
 
-     //TODO CHECK IF ALREADY CLOSED
-        return Request       
-        .findOneAndUpdate({request_id: request_id, id_project: id_project}, {status: newstatus}, {new: true, upsert:false})
+      //TODO CHECK IF ALREADY CLOSED
+      return Request
+        .findOneAndUpdate({ request_id: request_id, id_project: id_project }, { status: newstatus }, { new: true, upsert: false })
         .populate('lead')
         .populate('department')
         .populate('participatingBots')
-        .populate('participatingAgents')  
-        .populate({path:'requester',populate:{path:'id_user'}})
-        .exec( function(err, updatedRequest) {
+        .populate('participatingAgents')
+        .populate({ path: 'requester', populate: { path: 'id_user' } })
+        .exec(function (err, updatedRequest) {
 
-            if (err) {
-              winston.error(err);
-              return reject(err);
-            }
-            requestEvent.emit('request.update',updatedRequest);
-            requestEvent.emit("request.update.comment", {comment:"STATUS_CHANGE",request:updatedRequest});
-            //TODO emit request.clone or reopen also 
+          if (err) {
+            winston.error(err);
+            return reject(err);
+          }
 
-            return resolve(updatedRequest);
-          });
+          requestEvent.emit('request.update', updatedRequest); //deprecated
+          requestEvent.emit("request.update.comment", { comment: "STATUS_CHANGE", request: updatedRequest });//Deprecated
+          requestEvent.emit("request.updated", { comment: "STATUS_CHANGE", request: updatedRequest, patch: { status: newstatus } });
+          //TODO emit request.clone or reopen also 
+
+          return resolve(updatedRequest);
+        });
     });
 
   }
@@ -731,36 +1093,39 @@ class RequestService {
 
 
     return new Promise(function (resolve, reject) {
-     // winston.debug("request_id", request_id);
-     // winston.debug("newstatus", newstatus);
+      winston.debug("changeFirstTextAndPreflightByRequestId" + request_id);
+      // winston.debug("request_id", request_id);
+      // winston.debug("newstatus", newstatus);
 
-        if (!first_text) {
-              winston.error(err);
-              return reject({err:" Error changing first text. The field first_text is empty"});
-        }
-        
-        return Request       
-        .findOneAndUpdate({request_id: request_id, id_project: id_project}, {first_text: first_text, preflight: preflight}, {new: true, upsert:false})
+      if (!first_text) {
+        winston.error("Error changing first text. The field first_text is empty for request " + request_id);
+        return reject({ err: "Error changing first text. The field first_text is empty" });
+      }
+
+      return Request
+        .findOneAndUpdate({ request_id: request_id, id_project: id_project }, { first_text: first_text, preflight: preflight }, { new: true, upsert: false })
         .populate('lead')
         .populate('department')
         .populate('participatingBots')
-        .populate('participatingAgents')  
-        .populate({path:'requester',populate:{path:'id_user'}})
-        .exec( function(err, updatedRequest) {
+        .populate('participatingAgents')
+        .populate({ path: 'requester', populate: { path: 'id_user' } })
+        .exec(function (err, updatedRequest) {
 
-            if (err) {
-              winston.error(err);
-              return reject(err);
-            }
+          if (err) {
+            winston.error(err);
+            return reject(err);
+          }
 
-           
-            requestEvent.emit('request.update.preflight',updatedRequest); //archive to audit log
-            requestEvent.emit('request.update',updatedRequest);
-            requestEvent.emit("request.update.comment", {comment:"FIRSTTEXT_PREFLIGHT_CHANGE",request:updatedRequest});
-            //TODO emit request.clone or reopen also 
 
-            return resolve(updatedRequest);
-          });
+          requestEvent.emit('request.update.preflight', updatedRequest); //archive to audit log
+          requestEvent.emit('request.update', updatedRequest);
+          requestEvent.emit("request.update.comment", { comment: "FIRSTTEXT_PREFLIGHT_CHANGE", request: updatedRequest });//Deprecated
+          requestEvent.emit("request.updated", { comment: "FIRSTTEXT_PREFLIGHT_CHANGE", request: updatedRequest, patch: { first_text: first_text, preflight: preflight } });
+
+          //TODO emit request.clone or reopen also 
+
+          return resolve(updatedRequest);
+        });
     });
 
   }
@@ -768,28 +1133,30 @@ class RequestService {
   changeFirstTextByRequestId(request_id, id_project, first_text) {
 
     return new Promise(function (resolve, reject) {
-     // winston.debug("request_id", request_id);
-     // winston.debug("newstatus", newstatus);
+      // winston.debug("request_id", request_id);
+      // winston.debug("newstatus", newstatus);
 
-        return Request       
-        .findOneAndUpdate({request_id: request_id, id_project: id_project}, {first_text: first_text}, {new: true, upsert:false})
+      return Request
+        .findOneAndUpdate({ request_id: request_id, id_project: id_project }, { first_text: first_text }, { new: true, upsert: false })
         .populate('lead')
         .populate('department')
         .populate('participatingBots')
-        .populate('participatingAgents')  
-        .populate({path:'requester',populate:{path:'id_user'}})
-        .exec( function(err, updatedRequest) {
+        .populate('participatingAgents')
+        .populate({ path: 'requester', populate: { path: 'id_user' } })
+        .exec(function (err, updatedRequest) {
 
-            if (err) {
-              winston.error(err);
-              return reject(err);
-            }
-            requestEvent.emit('request.update',updatedRequest);
-            requestEvent.emit("request.update.comment", {comment:"FIRSTTEXT_CHANGE",request:updatedRequest});
-            //TODO emit request.clone or reopen also 
+          if (err) {
+            winston.error(err);
+            return reject(err);
+          }
+          requestEvent.emit('request.update', updatedRequest);
+          requestEvent.emit("request.update.comment", { comment: "FIRSTTEXT_CHANGE", request: updatedRequest });//Deprecated
+          requestEvent.emit("request.updated", { comment: "FIRSTTEXT_CHANGE", request: updatedRequest, patch: { first_text: first_text } });
 
-            return resolve(updatedRequest);
-          });
+          //TODO emit request.clone or reopen also 
+
+          return resolve(updatedRequest);
+        });
     });
 
   }
@@ -799,92 +1166,119 @@ class RequestService {
   changePreflightByRequestId(request_id, id_project, preflight) {
 
     return new Promise(function (resolve, reject) {
-     // winston.debug("request_id", request_id);
-     // winston.debug("newstatus", newstatus);
+      // winston.debug("request_id", request_id);
+      // winston.debug("newstatus", newstatus);
 
-        return Request       
-        .findOneAndUpdate({request_id: request_id, id_project: id_project}, {preflight: preflight}, {new: true, upsert:false})
+      return Request
+        .findOneAndUpdate({ request_id: request_id, id_project: id_project }, { preflight: preflight }, { new: true, upsert: false })
         .populate('lead')
         .populate('department')
         .populate('participatingBots')
-        .populate('participatingAgents')  
-        .populate({path:'requester',populate:{path:'id_user'}})
-        .exec( function(err, updatedRequest) {
+        .populate('participatingAgents')
+        .populate({ path: 'requester', populate: { path: 'id_user' } })
+        .exec(function (err, updatedRequest) {
 
-            if (err) {
-              winston.error(err);
-              return reject(err);
-            }
-            requestEvent.emit('request.update',updatedRequest);
-            requestEvent.emit("request.update.comment", {comment:"PREFLIGHT_CHANGE",request:updatedRequest});
+          if (err) {
+            winston.error(err);
+            return reject(err);
+          }
+          requestEvent.emit('request.update', updatedRequest);
+          requestEvent.emit("request.update.comment", { comment: "PREFLIGHT_CHANGE", request: updatedRequest });//Deprecated
+          requestEvent.emit("request.updated", { comment: "PREFLIGHT_CHANGE", request: updatedRequest, patch: { preflight: preflight } });
 
-            return resolve(updatedRequest);
-          });
+          return resolve(updatedRequest);
+        });
     });
 
   }
 
-  setClosedAtByRequestId(request_id, id_project, closed_at) {
+  setClosedAtByRequestId(request_id, id_project, created_at, closed_at, closed_by) {
 
     return new Promise(function (resolve, reject) {
-     // winston.debug("request_id", request_id);
-     // winston.debug("newstatus", newstatus);
+      // winston.debug("request_id", request_id);
+      // winston.debug("newstatus", newstatus);
 
-        return Request        
-        .findOneAndUpdate({request_id: request_id, id_project: id_project}, {closed_at: closed_at}, {new: true, upsert:false})
+      let duration = Math.abs(new Date(created_at) - new Date(closed_at))
+
+      return Request
+        .findOneAndUpdate({ request_id: request_id, id_project: id_project }, { closed_at: closed_at, closed_by: closed_by, duration: duration }, { new: true, upsert: false })
         .populate('lead')
         .populate('department')
         .populate('participatingBots')
-        .populate('participatingAgents')  
-        .populate({path:'requester',populate:{path:'id_user'}})
-        .exec( function(err, updatedRequest) {
-            if (err) {
-              winston.error(err);
-              return reject(err);
-            }
+        .populate('participatingAgents')
+        .populate({ path: 'requester', populate: { path: 'id_user' } })
+        .exec( async function (err, updatedRequest) {
+          if (err) {
+            winston.error(err);
+            return reject(err);
+          }
 
-           // winston.debug("updatedRequest", updatedRequest);
-            return resolve(updatedRequest);
-          });
+          let project = await projectService.getCachedProject(id_project).catch((err) => {
+            winston.warn("Error getting cached project. Skip conversation quota check.")
+            winston.warn("Getting cached project error:  ", err)
+          })
+
+          let payload = {
+            project: project,
+            request: updatedRequest
+          }
+          if (updatedRequest.channel.name === 'voice-vxml') {
+            requestEvent.emit('request.close.quote', payload);
+          }
+          // winston.debug("updatedRequest", updatedRequest);
+          return resolve(updatedRequest);
+        });
     });
 
   }
+
+
 
   // unused
   incrementMessagesCountByRequestId(request_id, id_project) {
 
     return new Promise(function (resolve, reject) {
-     // winston.debug("request_id", request_id);
-     // winston.debug("newstatus", newstatus);
+      // winston.debug("request_id", request_id);
+      // winston.debug("newstatus", newstatus);
 
-        return Request       
-        .findOneAndUpdate({request_id: request_id, id_project: id_project}, {$inc : {'messages_count' : 1}}, {new: true, upsert:false}, function(err, updatedRequest) {
-            if (err) {
-              winston.error(err);
-              return reject(err);
-            }
-            winston.debug("Message count +1");
-            return resolve(updatedRequest);
-          });
+      return Request
+        .findOneAndUpdate({ request_id: request_id, id_project: id_project }, { $inc: { 'messages.messages_count': 1 } }, { new: true, upsert: false }, function (err, updatedRequest) {
+          if (err) {
+            winston.error(err);
+            return reject(err);
+          }
+          winston.debug("Message count +1");
+          return resolve(updatedRequest);
+        });
     });
 
   }
 
-  updateWaitingTimeByRequestId(request_id, id_project) {
+  updateWaitingTimeByRequestId(request_id, id_project, enable_populate) {
 
     return new Promise(function (resolve, reject) {
-     // winston.debug("request_id", request_id);
-     // winston.debug("newstatus", newstatus);
+      // winston.debug("request_id", request_id);
+      // winston.debug("newstatus", newstatus);
 
-      return Request       
-      .findOne({request_id: request_id, id_project: id_project})
-      .populate('lead')
-      .populate('department')
-      .populate('participatingBots')
-      .populate('participatingAgents')  
-      .populate({path:'requester',populate:{path:'id_user'}})
-      .cache(cacheUtil.defaultTTL, id_project+":requests:request_id:"+request_id)     
-      .exec(function(err, request) {
+      let q = Request
+        .findOne({ request_id: request_id, id_project: id_project });
+
+      if (enable_populate == true) {
+        winston.debug("updateWaitingTimeByRequestId  enable_populate");
+
+        q.populate('lead')
+          .populate('department')
+          .populate('participatingBots')
+          .populate('participatingAgents')
+          .populate({ path: 'requester', populate: { path: 'id_user' } });
+      }
+
+
+      // if (cacheEnabler.request) {  //attention this cache is not usable bacause cacheoose don't support populate without .lean.. so if cached populated field is not returned with cacheoose, updateWaitingTime is only used in chat21webhook but i thik it is important for messages route
+      //   q.cache(cacheUtil.defaultTTL, id_project+":requests:request_id:"+request_id)           //request_cache
+      //   winston.debug('request cache enabled');
+      // }
+      q.exec(function (err, request) {
         if (err) {
           winston.error(err);
           return reject(err);
@@ -894,21 +1288,32 @@ class RequestService {
           var now = Date.now();
           var waitingTime = now - request.createdAt;
           // winston.debug("waitingTime", waitingTime);
-  
-         
+
+
           request.waiting_time = waitingTime;
           // TODO REENABLE SERVED
           // request.status = RequestConstants.SERVED;
           request.first_response_at = now;
 
-            // winston.debug(" request",  request);
-            winston.debug("Request  waitingTime setted");
-              //cacheinvalidation
-          return resolve(request.save());
-        }else {
+          // winston.debug(" request",  request);
+          winston.debug("Request  waitingTime setted");
+          //cacheinvalidation
+          // return resolve(request.save());
+          request.save(function (err, savedRequest) {
+            if (err) {
+              return reject(err);
+            }
+            requestEvent.emit('request.update', savedRequest);
+
+            return resolve(savedRequest);
+          });
+
+
+
+        } else {
           return resolve(request);
         }
-        
+
       });
 
     });
@@ -916,51 +1321,61 @@ class RequestService {
   }
 
 
-  closeRequestByRequestId(request_id, id_project, skipStatsUpdate, notify) {
+  closeRequestByRequestId(request_id, id_project, skipStatsUpdate, notify, closed_by, force) {
 
     var that = this;
     return new Promise(function (resolve, reject) {
-     // winston.debug("request_id", request_id);
-     
+      // winston.debug("request_id", request_id);
 
-     return Request      
-     .findOne({request_id: request_id, id_project: id_project})
-     
-     .populate('lead')
-     .populate('department')
-     .populate('participatingBots')
-     .populate('participatingAgents')  
-     .populate({path:'requester',populate:{path:'id_user'}})
-     .exec( function(err, request) {
+      if (force == undefined) {
+        winston.debug("force is undefined ");
+        force = false;
+      }
+      //  else {
+      //   winston.info("force is: " + force);
+      //  }
 
-     
-       if (err){
-         winston.error("Error getting closing request ", err);
-         return reject(err);
-       }
-       if (!request) {
-         winston.error("Request not found for request_id "+ request_id + " and id_project " + id_project);
-         return reject({"success":false, msg:"Request not found for request_id "+ request_id + " and id_project " + id_project});
-       }      
-       if (request.status == RequestConstants.CLOSED) {
-         // qui1000
-      //  if (request.statusObj.closed) {
-        winston.debug("Request already closed for request_id "+ request_id + " and id_project " + id_project);
-        return resolve(request);
-       }
+      return Request
+        .findOne({ request_id: request_id, id_project: id_project })
 
-      //  un utente può chiudere se appartiene a participatingAgents oppure meglio agents del progetto?
-      
-     
-       return that.changeStatusByRequestId(request_id, id_project, 1000).then(function(updatedRequest) {
-         //  qui1000
-        // return that.changeStatusByRequestId(request_id, id_project, {closed:true}).then(function(updatedRequest) {
-          
+        .populate('lead')
+        .populate('department')
+        .populate('participatingBots')
+        .populate('participatingAgents')
+        .populate({ path: 'requester', populate: { path: 'id_user' } })
+        .exec(function (err, request) {
+
+
+          if (err) {
+            winston.error("Error getting closing request with request_id: " + request_id, err);
+            return reject(err);
+          }
+          if (!request) {
+            winston.error("Request not found for request_id " + request_id + " and id_project " + id_project);
+            return reject({ "success": false, msg: "Request not found for request_id " + request_id + " and id_project " + id_project });
+          }
+          if (force == false && request.status == RequestConstants.CLOSED) {
+            // qui1000
+            //  if (request.statusObj.closed) {
+            requestEvent.emit('request.close', request);
+            winston.debug("Request already closed for request_id " + request_id + " and id_project " + id_project);
+            return resolve(request);
+          }
+
+          winston.debug("sono qui");
+
+          //  un utente può chiudere se appartiene a participatingAgents oppure meglio agents del progetto?
+
+
+          return that.changeStatusByRequestId(request_id, id_project, 1000).then(function (updatedRequest) {
+            //  qui1000
+            // return that.changeStatusByRequestId(request_id, id_project, {closed:true}).then(function(updatedRequest) {
+
 
             // winston.debug("updatedRequest", updatedRequest);
-            return messageService.getTranscriptByRequestId(request_id, id_project).then(function(transcript) {
-             // winston.debug("transcript", transcript);
-              return that.updateTrascriptByRequestId(request_id, id_project, transcript).then(function(updatedRequest) {
+            return messageService.getTranscriptByRequestId(request_id, id_project).then(function (transcript) {
+              // winston.debug("transcript", transcript);
+              return that.updateTrascriptByRequestId(request_id, id_project, transcript).then(function (updatedRequest) {
 
 
                 if (skipStatsUpdate) {
@@ -969,17 +1384,18 @@ class RequestService {
                   winston.debug("Request closed ", updatedRequest);
                   //TODO ?? requestEvent.emit('request.update', updatedRequest);
                   requestEvent.emit('request.close', updatedRequest);
-                  requestEvent.emit('request.close.extended', {request: updatedRequest, notify: notify});
+                  requestEvent.emit('request.close.extended', { request: updatedRequest, notify: notify });
                   return resolve(updatedRequest);
                 }
-                
-                return that.setClosedAtByRequestId(request_id, id_project, new Date().getTime()).then(function(updatedRequest) {
-                  
-                    winston.verbose("Request closed with id: " + updatedRequest.id);
-                    winston.debug("Request closed ", updatedRequest);
-                    //TODO ?? requestEvent.emit('request.update', updatedRequest);
-                    requestEvent.emit('request.close', updatedRequest);
-                    requestEvent.emit('request.close.extended', {request: updatedRequest, notify: notify});
+
+                // setClosedAtByRequestId(request_id, id_project, closed_at, closed_by)
+                return that.setClosedAtByRequestId(request_id, id_project, request.createdAt, new Date().getTime(), closed_by).then(function (updatedRequest) {
+
+                  winston.verbose("Request closed with id: " + updatedRequest.id);
+                  winston.debug("Request closed ", updatedRequest);
+                  //TODO ?? requestEvent.emit('request.update', updatedRequest);
+                  requestEvent.emit('request.close', updatedRequest);
+                  requestEvent.emit('request.close.extended', { request: updatedRequest, notify: notify });
 
                   return resolve(updatedRequest);
                 });
@@ -988,9 +1404,9 @@ class RequestService {
 
               });
             });
-          }).catch(function(err)  {
+          }).catch(function (err) {
             winston.error(err);
-              return reject(err);
+            return reject(err);
           });
         });
     });
@@ -1002,72 +1418,74 @@ class RequestService {
 
     var that = this;
     return new Promise(function (resolve, reject) {
-     // winston.debug("request_id", request_id);
-     
-        return Request      
-        .findOne({request_id: request_id, id_project: id_project})
-        
+      // winston.debug("request_id", request_id);
+
+      return Request
+        .findOne({ request_id: request_id, id_project: id_project })
+
         .populate('lead')
         .populate('department')
         .populate('participatingBots')
-        .populate('participatingAgents')  
-        .populate({path:'requester',populate:{path:'id_user'}})
-        .exec( function(err, request) {
+        .populate('participatingAgents')
+        .populate({ path: 'requester', populate: { path: 'id_user' } })
+        .exec(function (err, request) {
 
-        
-          if (err){
+
+          if (err) {
             winston.error("Error getting reopened request ", err);
             return reject(err);
           }
           if (!request) {
-            winston.error("Request not found for request_id "+ request_id + " and id_project " + id_project);
-            return reject({"success":false, msg:"Request not found for request_id "+ request_id + " and id_project " + id_project});
+            winston.error("Request not found for request_id " + request_id + " and id_project " + id_project);
+            return reject({ "success": false, msg: "Request not found for request_id " + request_id + " and id_project " + id_project });
           }
 
-          if (request.status == RequestConstants.ASSIGNED || request.status == RequestConstants.UNASSIGNED 
+          if (request.status == RequestConstants.ASSIGNED || request.status == RequestConstants.UNASSIGNED
             // TODO REENABLE SERVED
             // || request.status == RequestConstants.SERVED
-            ) {
-            winston.debug("request already open"); 
+          ) {
+            winston.debug("request already open");
             return resolve(request);
           }
 
-          if (request.participants.length>0) {
-            request.status =  RequestConstants.ASSIGNED;
+          if (request.participants.length > 0) {
+            request.status = RequestConstants.ASSIGNED;
             // assigned_at?
           } else {
-            request.status =  RequestConstants.UNASSIGNED;
+            request.status = RequestConstants.UNASSIGNED;
           }
           // TODO REENABLE SERVED
           // attento served qui????forse no
 
-            //cacheinvalidation
-          request.save(function(err, savedRequest) {
+          //cacheinvalidation
+          request.save(function (err, savedRequest) {
             if (err) {
               winston.error("Error saving reopened the request", err);
-              return reject(err);              
-            }          
-            
+              return reject(err);
+            }
+
             requestEvent.emit('request.update', savedRequest);
-            requestEvent.emit("request.update.comment", {comment:"REOPEN",request:savedRequest});
+            requestEvent.emit("request.update.comment", { comment: "REOPEN", request: savedRequest });//Deprecated
+            requestEvent.emit("request.updated", { comment: "REOPEN", request: savedRequest, patch: { status: savedRequest.status } });
+
             requestEvent.emit('request.reopen', savedRequest);
 
             winston.verbose("Request reopened", savedRequest);
 
             // TODO allora neanche qui participatingAgent è ok? 
 
-            
+
             return resolve(savedRequest);
-            
+
           });
 
-         
+
 
         })
-        // .catch(function(err)  {
-        //       winston.error("Error reopening the request", err);
-        //       return reject(err);
-        //   });
+      // .catch(function(err)  {
+      //       winston.error("Error reopening the request", err);
+      //       return reject(err);
+      //   });
     });
 
   }
@@ -1078,22 +1496,22 @@ class RequestService {
       // winston.debug("request_id", request_id);
       // winston.debug("transcript", transcript);
 
-        //cacheinvalidation
-        return Request.findOneAndUpdate({request_id: request_id, id_project: id_project}, {transcript: transcript}, {new: true, upsert:false}, function(err, updatedRequest) {
-            if (err) {
-              winston.error(err);
-              return reject(err);
-            }
-           // winston.debug("updatedRequest", updatedRequest);
-            return resolve(updatedRequest);
-          });
+      //cacheinvalidation
+      return Request.findOneAndUpdate({ request_id: request_id, id_project: id_project }, { transcript: transcript }, { new: true, upsert: false }, function (err, updatedRequest) {
+        if (err) {
+          winston.error(err);
+          return reject(err);
+        }
+        // winston.debug("updatedRequest", updatedRequest);
+        return resolve(updatedRequest);
+      });
     });
 
   }
 
   findByRequestId(request_id, id_project) {
     return new Promise(function (resolve, reject) {
-      return Request.findOne({request_id: request_id, id_project: id_project},  function(err, request) {
+      return Request.findOne({ request_id: request_id, id_project: id_project }, function (err, request) {
         if (err) {
           return reject(err);
         }
@@ -1106,140 +1524,160 @@ class RequestService {
 
 
   setParticipantsByRequestId(request_id, id_project, newparticipants) {
-    
+
     //TODO validate participants
     // validate if array of string newparticipants
     return new Promise(function (resolve, reject) {
-      
+
       var isArray = Array.isArray(newparticipants);
 
-      if(isArray==false) {
-        winston.error('setParticipantsByRequestId error  newparticipants is not an array for request_id '+ request_id + ' and id_project '+ id_project);
-        return reject('setParticipantsByRequestId error  newparticipants is not an array for request_id '+ request_id + ' and id_project '+ id_project);
+      if (isArray == false) {
+        winston.error('setParticipantsByRequestId error  newparticipants is not an array for request_id ' + request_id + ' and id_project ' + id_project);
+        return reject('setParticipantsByRequestId error  newparticipants is not an array for request_id ' + request_id + ' and id_project ' + id_project);
       }
 
       return Request
-       
-      .findOne({request_id: request_id, id_project: id_project})     
-      // qui cache ok
-      .exec( function(err, request) {
-        if (err) {
-          winston.error("Error setParticipantsByRequestId", err);
-          return reject(err);
-        }       
-        if (!request) {
-          winston.error('Request not found for request_id '+ request_id + ' and id_project '+ id_project);
-          return reject('Request not found for request_id '+ request_id + ' and id_project '+ id_project);
-        }
-        var oldParticipants = request.participants;
-        winston.debug('oldParticipants', oldParticipants);
-        winston.debug('newparticipants', newparticipants);
-        
-        if (requestUtil.arraysEqual(oldParticipants, newparticipants)){
-        //if (oldParticipants === newparticipants) {
-          winston.verbose('Request members '+ oldParticipants+ ' already equal to ' + newparticipants + ' for request_id '+ request_id + ' and id_project '+ id_project);
-          return request
-          .populate('lead')
-          .populate('department')
-          .populate('participatingBots')
-          .populate('participatingAgents')  
-          .populate({path:'requester',populate:{path:'id_user'}})
-          .execPopulate( function(err, requestComplete) {
-            return resolve(requestComplete);
-          });
 
-        }
-
-        request.participants = newparticipants;
-
-        var newparticipantsAgents = [];
-        var newparticipantsBots = [];
-
-
-        if (newparticipants && newparticipants.length>0) {
-          var hasBot = false;
-          newparticipants.forEach(newparticipant => {
-            // botprefix
-            if (newparticipant.startsWith("bot_")) {   
-              hasBot = true;               
-              // botprefix          
-              var assigned_operator_idStringBot = newparticipant.replace("bot_","");
-              winston.debug("assigned_operator_idStringBot:"+assigned_operator_idStringBot);
-              newparticipantsBots.push(assigned_operator_idStringBot);
-    
-            }else {
-              newparticipantsAgents.push(newparticipant);
-            }
-          });
-          request.hasBot = hasBot;
-        }
-
-        request.participantsAgents = newparticipantsAgents;
-        request.participantsBots = newparticipantsBots;
-       
-       
-
-
-
-        if (request.participants.length>0) { 
-          request.status =  RequestConstants.ASSIGNED; 
-          // assigned_at?
-        } else {
-          request.status =  RequestConstants.UNASSIGNED;
-        }
-        
-        request.waiting_time = undefined //reset waiting_time on reroute ????
-        // TODO REENABLE SERVED
-        // qui potrebbe essere che la richiesta era served con i vecchi agenti e poi facendo setParticipants si riporta ad assigned o unassigned perdendo l'informazione di served
-
-          //cacheinvalidation
-        return request.save(function(err, updatedRequest) {
-          // dopo save non aggiorna participating
+        .findOne({ request_id: request_id, id_project: id_project })
+        // qui cache ok
+        .exec(function (err, request) {
           if (err) {
             winston.error("Error setParticipantsByRequestId", err);
             return reject(err);
           }
-        
-         return updatedRequest
-          .populate('lead')
-          .populate('department')
-          .populate('participatingBots')
-          .populate('participatingAgents')  
-          .populate({path:'requester',populate:{path:'id_user'}})
-          .execPopulate( function(err, requestComplete) {
+          if (!request) {
+            winston.error('Request not found for request_id ' + request_id + ' and id_project ' + id_project);
+            return reject('Request not found for request_id ' + request_id + ' and id_project ' + id_project);
+          }
+
+          if (request.channel?.name === 'form' || request.channel?.name === 'email') {
+            if (Array.isArray(request.participantsAgents)) {
+              if (request.participantsAgents.length === 1) {
+                winston.error('Cannot add participants: participantsAgents already has one element for request_id ' + request_id + ' and id_project ' + id_project);
+                return reject('Cannot add participants: only one participant allowed for this request');
+              } else if (request.participantsAgents.length === 0) {
+                if (Array.isArray(newparticipants) && newparticipants.length === 1) {
+                  // ok, allow to add one participant
+                } else {
+                  winston.error('Can only add one participant for request_id ' + request_id + ' and id_project ' + id_project);
+                  return reject('Can only add one participant for this request');
+                }
+              }
+            }
+          }
+
+          var oldParticipants = request.participants;
+          winston.debug('oldParticipants', oldParticipants);
+          winston.debug('newparticipants', newparticipants);
+
+          if (requestUtil.arraysEqual(oldParticipants, newparticipants)) {
+            //if (oldParticipants === newparticipants) {
+            winston.verbose('Request members ' + oldParticipants + ' already equal to ' + newparticipants + ' for request_id ' + request_id + ' and id_project ' + id_project);
+            return request
+              .populate('lead')
+              .populate('department')
+              .populate('participatingBots')
+              .populate('participatingAgents')
+              .populate({ path: 'requester', populate: { path: 'id_user' } })
+              .execPopulate(function (err, requestComplete) {
+                return resolve(requestComplete);
+              });
+
+          }
+
+          request.participants = newparticipants;
+
+          var newparticipantsAgents = [];
+          var newparticipantsBots = [];
 
 
+          if (newparticipants && newparticipants.length > 0) {
+            var hasBot = false;
+            newparticipants.forEach(newparticipant => {
+              // botprefix
+              if (newparticipant.startsWith("bot_")) {
+                hasBot = true;
+                // botprefix          
+                var assigned_operator_idStringBot = newparticipant.replace("bot_", "");
+                winston.debug("assigned_operator_idStringBot:" + assigned_operator_idStringBot);
+                newparticipantsBots.push(assigned_operator_idStringBot);
+
+              } else {
+                newparticipantsAgents.push(newparticipant);
+              }
+            });
+            request.hasBot = hasBot;
+          }
+
+          request.participantsAgents = newparticipantsAgents;
+          request.participantsBots = newparticipantsBots;
+
+
+
+
+
+          if (request.participants.length > 0) {
+            request.status = RequestConstants.ASSIGNED;
+            // assigned_at?
+          } else {
+            request.status = RequestConstants.UNASSIGNED;
+          }
+
+          request.waiting_time = undefined //reset waiting_time on reroute ????
+          // TODO REENABLE SERVED
+          // qui potrebbe essere che la richiesta era served con i vecchi agenti e poi facendo setParticipants si riporta ad assigned o unassigned perdendo l'informazione di served
+
+          //cacheinvalidation
+          return request.save(function (err, updatedRequest) {
+            // dopo save non aggiorna participating
             if (err) {
-              winston.error("Error getting setParticipantsByRequestId", err);
+              winston.error("Error setParticipantsByRequestId", err);
               return reject(err);
             }
 
-            requestEvent.emit('request.update', requestComplete);
-            requestEvent.emit("request.update.comment", {comment:"PARTICIPANTS_SET",request:requestComplete});
+            return updatedRequest
+              .populate('lead')
+              .populate('department')
+              .populate('participatingBots')
+              .populate('participatingAgents')
+              .populate({ path: 'requester', populate: { path: 'id_user' } })
+              .execPopulate(function (err, requestComplete) {
 
 
-            winston.debug("oldParticipants ", oldParticipants);
+                if (err) {
+                  winston.error("Error getting setParticipantsByRequestId", err);
+                  return reject(err);
+                }
 
-            let newParticipants = requestComplete.participants;
-            winston.debug("newParticipants ", newParticipants);
+                winston.debug("oldParticipants ", oldParticipants);
 
-            var removedParticipants = oldParticipants.filter(d => !newParticipants.includes(d));
-            winston.debug("removedParticipants ", removedParticipants);
+                let newParticipants = requestComplete.participants;
+                winston.debug("newParticipants ", newParticipants);
 
-            var addedParticipants = newParticipants.filter(d => !oldParticipants.includes(d));
-            winston.debug("addedParticipants ", addedParticipants);
+                var removedParticipants = oldParticipants.filter(d => !newParticipants.includes(d));
+                winston.debug("removedParticipants ", removedParticipants);
 
-            requestEvent.emit('request.participants.update', {beforeRequest:request, 
-                        removedParticipants:removedParticipants, 
-                        addedParticipants:addedParticipants,
-                        request:requestComplete});
+                var addedParticipants = newParticipants.filter(d => !oldParticipants.includes(d));
+                winston.debug("addedParticipants ", addedParticipants);
 
-  // TODO allora neanche qui participatingAgent è ok?
-            return resolve(requestComplete);
-           });
+
+                requestEvent.emit('request.update', requestComplete);
+                requestEvent.emit("request.update.comment", { comment: "PARTICIPANTS_SET", request: requestComplete });//Deprecated
+                requestEvent.emit("request.updated", { comment: "PARTICIPANTS_SET", request: requestComplete, patch: { removedParticipants: removedParticipants, addedParticipants: addedParticipants } });
+
+                requestEvent.emit('request.participants.update', {
+                  beforeRequest: request,
+                  removedParticipants: removedParticipants,
+                  addedParticipants: addedParticipants,
+                  request: requestComplete
+                });
+
+                // TODO allora neanche qui participatingAgent è ok?
+                return resolve(requestComplete);
+              });
+          });
+
         });
-       
-      });
 
 
     });
@@ -1250,108 +1688,108 @@ class RequestService {
     winston.debug("id_project: " + id_project);
     winston.debug("addParticipantByRequestId member: " + member);
 
- 
 
-//TODO control if member is a valid project_user of the project
-// validate member is string
+
+    //TODO control if member is a valid project_user of the project
+    // validate member is string
     return new Promise(function (resolve, reject) {
 
-      if (member==undefined) {
+      if (member == undefined) {
         var err = "addParticipantByRequestId error, member field is null";
         winston.error(err);
         return reject(err);
       }
 
-      return Request       
-      .findOne({request_id: request_id, id_project: id_project})     
-      // qui cache         
-      .exec( function(err, request) {
-        if (err){
-          winston.error("Error adding participant ", err);
-          return reject(err);
-        }
-        if (!request) {
-          winston.error('Request not found for request_id '+ request_id + ' and id_project '+ id_project);
-          return reject('Request not found for request_id '+ request_id + ' and id_project '+ id_project);
-        }
-
-        winston.debug("assigned_operator here1");
-
-      // return Request.findById(id).then(function (request) {
-        if (request.participants.indexOf(member)==-1){
-          request.participants.push(member);
-
-          // botprefix
-          if (member.startsWith("bot_")) {
-            request.hasBot = true;
-
-          // botprefix
-            var assigned_operator_idStringBot = member.replace("bot_","");
-            winston.debug("assigned_operator_idStringBot:"+assigned_operator_idStringBot);            
-            request.participantsBots.push(assigned_operator_idStringBot);
-           }else {
-            request.participantsAgents.push(member);
-            request.hasBot = false; //???
-           }
-
-
-          if (request.participants.length>0) {          
-            request.status =  RequestConstants.ASSIGNED;
-            var assigned_at = Date.now();
-            request.assigned_at = assigned_at;
-          } else {
-            request.status =  RequestConstants.UNASSIGNED;
+      return Request
+        .findOne({ request_id: request_id, id_project: id_project })
+        // qui cache         
+        .exec(function (err, request) {
+          if (err) {
+            winston.error("Error adding participant ", err);
+            return reject(err);
           }
-// check error here
-  //cacheinvalidation
-          request.save(function(err, savedRequest) {
-            if (err) {
-              winston.error(err);
-              return reject(err);
+          if (!request) {
+            winston.error('Request not found for request_id ' + request_id + ' and id_project ' + id_project);
+            return reject('Request not found for request_id ' + request_id + ' and id_project ' + id_project);
+          }
+
+          winston.debug("assigned_operator here1");
+
+          // return Request.findById(id).then(function (request) {
+          if (request.participants.indexOf(member) == -1) {
+            request.participants.push(member);
+
+            // botprefix
+            if (member.startsWith("bot_")) {
+              request.hasBot = true;
+
+              // botprefix
+              var assigned_operator_idStringBot = member.replace("bot_", "");
+              winston.debug("assigned_operator_idStringBot:" + assigned_operator_idStringBot);
+              request.participantsBots.push(assigned_operator_idStringBot);
+            } else {
+              request.participantsAgents.push(member);
+              request.hasBot = false; //???
             }
 
-            winston.debug("saved", savedRequest);
 
-            return savedRequest
-            .populate('lead')
-            .populate('department')
-            .populate('participatingBots')
-            .populate('participatingAgents')  
-            .populate({path:'requester',populate:{path:'id_user'}})
-            .execPopulate( function(err, requestComplete) {
-
+            if (request.participants.length > 0) {
+              request.status = RequestConstants.ASSIGNED;
+              var assigned_at = Date.now();
+              request.assigned_at = assigned_at;
+            } else {
+              request.status = RequestConstants.UNASSIGNED;
+            }
+            // check error here
+            //cacheinvalidation
+            request.save(function (err, savedRequest) {
               if (err) {
-                winston.error("Error getting addParticipantByRequestId", err);
+                winston.error(err);
                 return reject(err);
               }
 
+              winston.debug("saved", savedRequest);
 
-              winston.debug("populated", requestComplete);
-           
-              requestEvent.emit('request.update', requestComplete);
-              requestEvent.emit("request.update.comment", {comment:"PARTICIPANT_ADD",request:requestComplete});
-              requestEvent.emit('request.participants.join', {member:member, request: requestComplete});
-              // requestEvent.emit('request.participants.update', {beforeRequest:request, request:savedRequest});
-                       
-              return resolve(requestComplete);
-          });
+              return savedRequest
+                .populate('lead')
+                .populate('department')
+                .populate('participatingBots')
+                .populate('participatingAgents')
+                .populate({ path: 'requester', populate: { path: 'id_user' } })
+                .execPopulate(function (err, requestComplete) {
+
+                  if (err) {
+                    winston.error("Error getting addParticipantByRequestId", err);
+                    return reject(err);
+                  }
+
+
+                  winston.debug("populated", requestComplete);
+
+                  requestEvent.emit('request.update', requestComplete);
+                  requestEvent.emit("request.update.comment", { comment: "PARTICIPANT_ADD", request: requestComplete });//Deprecated
+                  requestEvent.emit("request.updated", { comment: "PARTICIPANT_ADD", request: requestComplete, patch: { member: member } });
+                  requestEvent.emit('request.participants.join', { member: member, request: requestComplete });
+
+                  return resolve(requestComplete);
+                });
+            });
+            // qui assignetat
+          } else {
+            winston.debug('Request member ' + member + ' already added for request_id ' + request_id + ' and id_project ' + id_project);
+            return request
+              .populate('lead')
+              .populate('department')
+              .populate('participatingBots')
+              .populate('participatingAgents')
+              .populate({ path: 'requester', populate: { path: 'id_user' } })
+              .execPopulate(function (err, requestComplete) {
+                return resolve(requestComplete);
+              });
+          }
+
         });
-          // qui assignetat
-        } else {
-          winston.debug('Request member '+ member+ ' already added for request_id '+ request_id + ' and id_project '+ id_project);
-          return request
-          .populate('lead')
-          .populate('department')
-          .populate('participatingBots')
-          .populate('participatingAgents')  
-          .populate({path:'requester',populate:{path:'id_user'}})
-          .execPopulate( function(err, requestComplete) {
-            return resolve(requestComplete);
-          });
-        }
-                       
-      });
-   });
+    });
   }
 
   removeParticipantByRequestId(request_id, id_project, member) {
@@ -1359,151 +1797,151 @@ class RequestService {
     winston.debug("id_project", id_project);
     winston.debug("member", member);
 
-    return new Promise(function (resolve, reject)  {
+    return new Promise(function (resolve, reject) {
 
 
 
-      if (member==undefined) {
+      if (member == undefined) {
         var err = "removeParticipantByRequestId error, member field is null";
         winston.error(err);
         return reject(err);
       }
 
-    
-      return Request        
-        .findOne({request_id: request_id, id_project: id_project})
+
+      return Request
+        .findOne({ request_id: request_id, id_project: id_project })
         // .populate('participatingAgents')  //for abandoned_by_project_users
         // qui cache    
-        .exec( async (err, request) => {
-        
-        if (err){
-          winston.error("Error removing participant ", err);
-          return reject(err);
-        }
+        .exec(async (err, request) => {
 
-        if (!request) {
-          winston.error('Request not found for request_id '+ request_id + ' and id_project '+ id_project);
-          return reject('Request not found for request_id '+ request_id + ' and id_project '+ id_project);
-        }
+          if (err) {
+            winston.error("Error removing participant ", err);
+            return reject(err);
+          }
 
-        var index = request.participants.indexOf(member);
-        // winston.debug("index", index);
+          if (!request) {
+            winston.error('Request not found for request_id ' + request_id + ' and id_project ' + id_project);
+            return reject('Request not found for request_id ' + request_id + ' and id_project ' + id_project);
+          }
 
-        if (index > -1) {
-          request.participants.splice(index, 1);
-          // winston.debug(" request.participants",  request.participants);
+          var index = request.participants.indexOf(member);
+          // winston.debug("index", index);
 
-          // botprefix
-          if (member.startsWith("bot_")) {
-            request.hasBot = false;
+          if (index > -1) {
+            request.participants.splice(index, 1);
+            // winston.debug(" request.participants",  request.participants);
+
             // botprefix
-            var assigned_operator_idStringBot = member.replace("bot_","");
-            winston.debug("assigned_operator_idStringBot:"+assigned_operator_idStringBot);            
-            
-            var indexParticipantsBots = request.participantsBots.indexOf(assigned_operator_idStringBot);
-            request.participantsBots.splice(indexParticipantsBots, 1);
-           }else {
-            var indexParticipantsAgents = request.participantsAgents.indexOf(member);
-            request.participantsAgents.splice(indexParticipantsAgents, 1);
+            if (member.startsWith("bot_")) {
+              request.hasBot = false;
+              // botprefix
+              var assigned_operator_idStringBot = member.replace("bot_", "");
+              winston.debug("assigned_operator_idStringBot:" + assigned_operator_idStringBot);
+
+              var indexParticipantsBots = request.participantsBots.indexOf(assigned_operator_idStringBot);
+              request.participantsBots.splice(indexParticipantsBots, 1);
+            } else {
+              var indexParticipantsAgents = request.participantsAgents.indexOf(member);
+              request.participantsAgents.splice(indexParticipantsAgents, 1);
 
 
-           
-           try {
 
-             //request.attributes.abandoned_by_project_users  start TODO move to routing-queue
-             if (!request.attributes) {
-              winston.debug("removeParticipantByRequestId request.attributes is empty. creating it");
-              request.attributes = {};
+              try {
+
+                //request.attributes.abandoned_by_project_users  start TODO move to routing-queue
+                if (!request.attributes) {
+                  winston.debug("removeParticipantByRequestId request.attributes is empty. creating it");
+                  request.attributes = {};
+                }
+                if (!request.attributes.abandoned_by_project_users) {
+                  winston.debug("removeParticipantByRequestId request.attributes.abandoned_by_project_users is empty. creating it");
+                  request.attributes.abandoned_by_project_users = {}
+                }
+
+                /*
+                winston.info("request.participatingAgents",request.participatingAgents);
+                var pu = request.participatingAgents.find(projectUser => {
+                  console.log(projectUser);
+                  projectUser.id_user.toString() === member
+                });
+                winston.verbose("pu",pu);
+                */
+
+                var pu = await Project_user.findOne({ id_user: member, id_project: id_project }).exec();
+                winston.debug("pu", pu);
+
+                request.attributes.abandoned_by_project_users[pu._id] = new Date().getTime();
+                winston.debug("removeParticipantByRequestId request.attributes.abandoned_by_project_users", request.attributes.abandoned_by_project_users);
+                //request.attributes.abandoned_by_project_users  end
+
+              } catch (e) {
+                winston.error("Error getting removeParticipantByRequestId pu", e);
+              }
+
+
             }
-            if (!request.attributes.abandoned_by_project_users) {
-              winston.debug("removeParticipantByRequestId request.attributes.abandoned_by_project_users is empty. creating it");
-              request.attributes.abandoned_by_project_users = {}
+
+
+            if (request.status != RequestConstants.CLOSED) {//don't change the status to 100 or 200 for closed request to resolve this bug. if the agent leave the group and after close the request the status became 100, but if the request is closed the state (1000) must not be changed
+              // qui1000 ????
+              if (request.participants.length > 0) {
+                request.status = RequestConstants.ASSIGNED;
+                // assignet_at?
+              } else {
+                request.status = RequestConstants.UNASSIGNED;
+              }
             }
 
-            /*
-            winston.info("request.participatingAgents",request.participatingAgents);
-            var pu = request.participatingAgents.find(projectUser => {
-              console.log(projectUser);
-              projectUser.id_user.toString() === member
+            request.markModified('attributes');
+            // winston.debug(" request",  request);
+            //cacheinvalidation
+            return request.save(function (err, savedRequest) {
+              if (err) {
+                //winston.error("Error saving removed participant ", err);
+                return reject(err);
+              }
+
+              return savedRequest
+                .populate('lead')
+                .populate('department')
+                .populate('participatingBots')
+                .populate('participatingAgents')
+                .populate({ path: 'requester', populate: { path: 'id_user' } })
+                .execPopulate(function (err, requestComplete) {
+
+                  if (err) {
+                    winston.error("Error getting removed participant ", err);
+                    return reject(err);
+                  }
+
+
+                  requestEvent.emit('request.update', requestComplete);
+                  requestEvent.emit("request.update.comment", { comment: "PARTICIPANT_REMOVE", request: requestComplete });//Deprecated
+                  requestEvent.emit("request.updated", { comment: "PARTICIPANT_REMOVE", request: requestComplete, patch: { member: member } });
+                  requestEvent.emit('request.participants.leave', { member: member, request: requestComplete });
+
+
+                  return resolve(requestComplete);
+
+                });
             });
-            winston.verbose("pu",pu);
-            */
-
-            var pu = await Project_user.findOne({ id_user: member, id_project:id_project }).exec();
-            winston.debug("pu",pu);
-
-            request.attributes.abandoned_by_project_users[pu._id] = new Date().getTime();
-            winston.debug("removeParticipantByRequestId request.attributes.abandoned_by_project_users", request.attributes.abandoned_by_project_users);
-            //request.attributes.abandoned_by_project_users  end
-
-           }catch(e) {
-              winston.error("Error getting removeParticipantByRequestId pu",e);
-           }
-           
-
-          }
 
 
-          if (request.status!= RequestConstants.CLOSED) {//don't change the status to 100 or 200 for closed request to resolve this bug. if the agent leave the group and after close the request the status became 100, but if the request is closed the state (1000) must not be changed
-                // qui1000 ????
-          if (request.participants.length>0) {             
-            request.status =  RequestConstants.ASSIGNED;
-            // assignet_at?
           } else {
-            request.status =  RequestConstants.UNASSIGNED;
+            winston.verbose('Request member ' + member + ' already not found for request_id ' + request_id + ' and id_project ' + id_project);
+
+            return request
+              .populate('lead')
+              .populate('department')
+              .populate('participatingBots')
+              .populate('participatingAgents')
+              .populate({ path: 'requester', populate: { path: 'id_user' } })
+              .execPopulate(function (err, requestComplete) {
+                return resolve(requestComplete);
+              });
           }
-        }
-         
-        request.markModified('attributes');
-          // winston.debug(" request",  request);
-         //cacheinvalidation
-         return request.save(function(err, savedRequest) {
-            if (err){
-              winston.error("Error saving removed participant ", err);
-              return reject(err);
-            }
-            
-            return savedRequest
-            .populate('lead')
-            .populate('department')
-            .populate('participatingBots')
-            .populate('participatingAgents')  
-            .populate({path:'requester',populate:{path:'id_user'}})
-            .execPopulate( function(err, requestComplete) {
 
-            if (err){
-              winston.error("Error getting removed participant ", err);
-              return reject(err);
-            }
-
-            
-            requestEvent.emit('request.update', requestComplete);
-            requestEvent.emit("request.update.comment", {comment:"PARTICIPANT_REMOVE",request:requestComplete});
-            requestEvent.emit('request.participants.leave', {member:member, request: requestComplete});
-            // requestEvent.emit('request.participants.update', {beforeRequest: request, request:savedRequest});
-            
-
-            return resolve(requestComplete);
-
-          });
         });
-
-
-        }else {
-          winston.verbose('Request member '+ member+ ' already not found for request_id '+ request_id + ' and id_project '+ id_project);
-
-          return request
-          .populate('lead')
-          .populate('department')
-          .populate('participatingBots')
-          .populate('participatingAgents')  
-          .populate({path:'requester',populate:{path:'id_user'}})
-          .execPopulate( function(err, requestComplete) {
-            return resolve(requestComplete);
-          });
-        }
-                          
-      });
     });
   }
 
@@ -1511,55 +1949,57 @@ class RequestService {
 
   updateAttributesByRequestId(request_id, id_project, attributes) {
     var data = attributes;
-  
-    Request.findOne({"request_id":request_id, id_project:id_project})
-    .populate('lead')
-    .populate('department')
-    .populate('participatingBots')
-    .populate('participatingAgents')  
-    .populate({path:'requester',populate:{path:'id_user'}})
-    .exec( function(err, request) {
+
+    Request.findOne({ "request_id": request_id, id_project: id_project })
+      .populate('lead')
+      .populate('department')
+      .populate('participatingBots')
+      .populate('participatingAgents')
+      .populate({ path: 'requester', populate: { path: 'id_user' } })
+      .exec(function (err, request) {
         if (err) {
           return reject(err);
         }
         if (!request) {
-          return reject('Request not found for request_id '+ request_id + ' and id_project '+ id_project);
+          return reject('Request not found for request_id ' + request_id + ' and id_project ' + id_project);
         }
-  
-        
+
+
         if (!request.attributes) {
           winston.debug("empty attributes")
           request.attributes = {};
         }
-  
+
         winston.debug(" req attributes", request.attributes)
-          
-          Object.keys(data).forEach(function(key) {
-            var val = data[key];
-            winston.debug("data attributes "+key+" " +val)
-            request.attributes[key] = val;
-          });     
-          
-          winston.debug(" req attributes", request.attributes)
-  
-          // https://stackoverflow.com/questions/24054552/mongoose-not-saving-nested-object
-          request.markModified('attributes');
-          
-          //cacheinvalidation
-          return request.save(function (err, savedRequest) {
-            if (err) {
-              winston.error("error saving request attributes",err)
-              return reject({msg:"Error saving request attributes",err:err});
-            }
-            winston.verbose(" saved request attributes",savedRequest.toObject())
-            requestEvent.emit("request.update", savedRequest);
-            requestEvent.emit("request.update.comment", {comment:"ATTRIBUTES_UPDATE",request:savedRequest});
-            requestEvent.emit("request.attributes.update", savedRequest);
-            // allora neanche qui participatingAgent è ok?
-              return resolve(savedRequest);
-            });
-    });
-    
+
+        Object.keys(data).forEach(function (key) {
+          var val = data[key];
+          winston.debug("data attributes " + key + " " + val)
+          request.attributes[key] = val;
+        });
+
+        winston.debug(" req attributes", request.attributes)
+
+        // https://stackoverflow.com/questions/24054552/mongoose-not-saving-nested-object
+        request.markModified('attributes');
+
+        //cacheinvalidation
+        return request.save(function (err, savedRequest) {
+          if (err) {
+            winston.error("error saving request attributes", err)
+            return reject({ msg: "Error saving request attributes", err: err });
+          }
+          winston.verbose(" saved request attributes", savedRequest.toObject())
+          requestEvent.emit("request.update", savedRequest);
+          requestEvent.emit("request.update.comment", { comment: "ATTRIBUTES_UPDATE", request: savedRequest });//Deprecated
+          requestEvent.emit("request.updated", { comment: "ATTRIBUTES_UPDATE", request: savedRequest, patch: { attributes: data } });
+
+          requestEvent.emit("request.attributes.update", savedRequest);
+          // allora neanche qui participatingAgent è ok?
+          return resolve(savedRequest);
+        });
+      });
+
   }
 
 
@@ -1574,58 +2014,59 @@ class RequestService {
 
     return new Promise(function (resolve, reject) {
 
-      if (tag==undefined) {
+      if (tag == undefined) {
         var err = "addTagByRequestId error, tag field is null";
         winston.error(err);
         return reject(err);
       }
-      
 
-      return Request       
-      .findOne({request_id: request_id, id_project: id_project})      
-      .populate('lead')
+
+      return Request
+        .findOne({ request_id: request_id, id_project: id_project })
+        .populate('lead')
         .populate('department')
         .populate('participatingBots')
-        .populate('participatingAgents')  
-        .populate({path:'requester',populate:{path:'id_user'}})
-        .exec( function(err, request) {
-        if (err){
-          winston.error("Error adding tag ", err);
-          return reject(err);
-        }
-        if (!request) {
-          winston.error('Request not found for request_id '+ request_id + ' and id_project '+ id_project);
-          return reject('Request not found for request_id '+ request_id + ' and id_project '+ id_project);
-        }
+        .populate('participatingAgents')
+        .populate({ path: 'requester', populate: { path: 'id_user' } })
+        .exec(function (err, request) {
+          if (err) {
+            winston.error("Error adding tag ", err);
+            return reject(err);
+          }
+          if (!request) {
+            winston.error('Request not found for request_id ' + request_id + ' and id_project ' + id_project);
+            return reject('Request not found for request_id ' + request_id + ' and id_project ' + id_project);
+          }
 
 
-      // return Request.findById(id).then(function (request) {
-        if (request.tags.indexOf(tag)==-1){
-          request.tags.push(tag);        
-// check error here
+          // return Request.findById(id).then(function (request) {
+          if (request.tags.indexOf(tag) == -1) {
+            request.tags.push(tag);
+            // check error here
 
-          //cacheinvalidation
-          request.save(function(err, savedRequest) {
-            if (err) {
-              winston.error(err);
-              return reject(err);
-            }
-            
-            requestEvent.emit('request.update', savedRequest);      
-            requestEvent.emit("request.update.comment", {comment:"TAG_ADD",request:savedRequest});        
-            
-            
-            // allora neanche qui participatingAgent è ok?
-            return resolve(savedRequest);
-          });
+            //cacheinvalidation
+            request.save(function (err, savedRequest) {
+              if (err) {
+                winston.error(err);
+                return reject(err);
+              }
 
-          // qui assignetat
-        } else {
-          winston.debug('Request tag '+ tag+ ' already added for request_id '+ request_id + ' and id_project '+ id_project);
-          return resolve(request);
-        }                       
-      });
-   });
+              requestEvent.emit('request.update', savedRequest);
+              requestEvent.emit("request.update.comment", { comment: "TAG_ADD", request: savedRequest });        //Deprecated
+              requestEvent.emit("request.updated", { comment: "TAG_ADD", request: savedRequest, patch: { tags: tag } });
+
+
+              // allora neanche qui participatingAgent è ok?
+              return resolve(savedRequest);
+            });
+
+            // qui assignetat
+          } else {
+            winston.debug('Request tag ' + tag + ' already added for request_id ' + request_id + ' and id_project ' + id_project);
+            return resolve(request);
+          }
+        });
+    });
   }
 
 
@@ -1638,68 +2079,433 @@ class RequestService {
 
 
 
-      if (tag==undefined) {
+      if (tag == undefined) {
         var err = "removeTagByRequestId error, tag field is null";
         winston.error(err);
         return reject(err);
       }
 
-    
-      return Request        
-        .findOne({request_id: request_id, id_project: id_project})
+
+      return Request
+        .findOne({ request_id: request_id, id_project: id_project })
         .populate('lead')
         .populate('department')
         .populate('participatingBots')
-        .populate('participatingAgents')  
-        .populate({path:'requester',populate:{path:'id_user'}})
-        .exec( function(err, request) {
-        
-        if (err){
-          winston.error("Error removing tag ", err);
-          return reject(err);
-        }
+        .populate('participatingAgents')
+        .populate({ path: 'requester', populate: { path: 'id_user' } })
+        .exec(function (err, request) {
 
-        if (!request) {
-          winston.error('Request not found for request_id '+ request_id + ' and id_project '+ id_project);
-          return reject('Request not found for request_id '+ request_id + ' and id_project '+ id_project);
-        }
+          if (err) {
+            winston.error("Error removing tag ", err);
+            return reject(err);
+          }
 
-        // var index = request.tags.indexOf(tag);
-        var index = request.tags.findIndex(t => t.tag === tag);
+          if (!request) {
+            winston.error('Request not found for request_id ' + request_id + ' and id_project ' + id_project);
+            return reject('Request not found for request_id ' + request_id + ' and id_project ' + id_project);
+          }
 
-        winston.debug("index", index);
+          // var index = request.tags.indexOf(tag);
+          var index = request.tags.findIndex(t => t.tag === tag);
 
-        if (index > -1) {
-          request.tags.splice(index, 1);
-          // winston.debug(" request.participants",  request.participants);    
-       
+          winston.debug("index", index);
 
-          //cacheinvalidation
-          request.save(function(err, savedRequest) {
-
-            if (!err) {
-              requestEvent.emit('request.update', savedRequest);
-              requestEvent.emit("request.update.comment", {comment:"TAG_REMOVE",request:savedRequest});
-            }
-
-            // allora neanche qui participatingAgent è ok?
-
-            return resolve(savedRequest);
-
-          });
+          if (index > -1) {
+            request.tags.splice(index, 1);
+            // winston.debug(" request.participants",  request.participants);    
 
 
-        }else {
-          winston.info('Request tag '+ tag+ ' already not found for request_id '+ request_id + ' and id_project '+ id_project);
-          return resolve(request);
-        }      
-        
-          
-      });
+            //cacheinvalidation
+            request.save(function (err, savedRequest) {
+
+              if (!err) {
+                requestEvent.emit('request.update', savedRequest);
+                requestEvent.emit("request.update.comment", { comment: "TAG_REMOVE", request: savedRequest });//Deprecated
+                requestEvent.emit("request.updated", { comment: "TAG_REMOVE", request: savedRequest, patch: { tags: tag } });
+
+              }
+
+              // allora neanche qui participatingAgent è ok?
+
+              return resolve(savedRequest);
+
+            });
+
+
+          } else {
+            winston.info('Request tag ' + tag + ' already not found for request_id ' + request_id + ' and id_project ' + id_project);
+            return resolve(request);
+          }
+
+
+        });
     });
   }
 
 
+
+
+
+
+
+
+  addFollowerByRequestId(request_id, id_project, member) {
+    winston.debug("request_id: " + request_id);
+    winston.debug("id_project: " + id_project);
+    winston.debug("addFollowerByRequestId member: " + member);
+
+
+
+    //TODO control if member is a valid project_user of the project
+    // validate member is string
+    return new Promise(function (resolve, reject) {
+
+      if (member == undefined) {
+        var err = "addFollowerByRequestId error, member field is null";
+        winston.error(err);
+        return reject(err);
+      }
+
+      return Request
+        .findOne({ request_id: request_id, id_project: id_project })
+        // qui cache         
+        .exec(function (err, request) {
+          if (err) {
+            winston.error("Error adding follower ", err);
+            return reject(err);
+          }
+          if (!request) {
+            winston.error('Request not found for request_id ' + request_id + ' and id_project ' + id_project);
+            return reject('Request not found for request_id ' + request_id + ' and id_project ' + id_project);
+          }
+
+          winston.debug("assigned_operator here1");
+
+          // return Request.findById(id).then(function (request) {
+          if (request.followers.indexOf(member) == -1) {
+            request.followers.push(member);
+
+            request.save(function (err, savedRequest) {
+              if (err) {
+                winston.error(err);
+                return reject(err);
+              }
+
+              winston.debug("saved", savedRequest);
+
+              return savedRequest
+                .populate('lead')
+                .populate('department')
+                .populate('participatingBots')
+                .populate('participatingAgents')
+                // .populate('followers')  
+                .populate({ path: 'requester', populate: { path: 'id_user' } })
+                .execPopulate(function (err, requestComplete) {
+
+                  if (err) {
+                    winston.error("Error getting addFollowerByRequestId", err);
+                    return reject(err);
+                  }
+
+
+                  winston.debug("populated", requestComplete);
+
+                  requestEvent.emit('request.update', requestComplete);
+                  requestEvent.emit("request.update.comment", { comment: "FOLLOWER_ADD", request: requestComplete });//Deprecated
+                  requestEvent.emit("request.updated", { comment: "FOLLOWER_ADD", request: requestComplete, patch: { member: member } });
+                  requestEvent.emit('request.followers.join', { member: member, request: requestComplete });
+
+                  return resolve(requestComplete);
+                });
+            });
+            // qui assignetat
+          } else {
+            winston.debug('Request member ' + member + ' already added for request_id ' + request_id + ' and id_project ' + id_project);
+            return request
+              .populate('lead')
+              .populate('department')
+              .populate('participatingBots')
+              .populate('participatingAgents')
+              // .populate('followers')  
+              .populate({ path: 'requester', populate: { path: 'id_user' } })
+              .execPopulate(function (err, requestComplete) {
+                return resolve(requestComplete);
+              });
+          }
+
+        });
+    });
+  }
+
+
+
+
+
+  setFollowersByRequestId(request_id, id_project, newfollowers) {
+
+    //TODO validate participants
+    // validate if array of string newparticipants
+    return new Promise(function (resolve, reject) {
+
+      var isArray = Array.isArray(newfollowers);
+
+      if (isArray == false) {
+        winston.error('setFollowersByRequestId error  newfollowers is not an array for request_id ' + request_id + ' and id_project ' + id_project);
+        return reject('setFollowersByRequestId error  newfollowers is not an array for request_id ' + request_id + ' and id_project ' + id_project);
+      }
+
+      return Request
+
+        .findOne({ request_id: request_id, id_project: id_project })
+        // qui cache ok
+        .exec(function (err, request) {
+          if (err) {
+            winston.error("Error setFollowersByRequestId", err);
+            return reject(err);
+          }
+          if (!request) {
+            winston.error('Request not found for request_id ' + request_id + ' and id_project ' + id_project);
+            return reject('Request not found for request_id ' + request_id + ' and id_project ' + id_project);
+          }
+          var oldfollowers = request.followers;
+          winston.debug('oldParticipants', oldfollowers);
+          winston.debug('newparticipants', newfollowers);
+
+          if (requestUtil.arraysEqual(oldfollowers, newfollowers)) {
+            //if (oldParticipants === newparticipants) {
+            winston.verbose('Request members ' + oldfollowers + ' already equal to ' + newfollowers + ' for request_id ' + request_id + ' and id_project ' + id_project);
+            return request
+              .populate('lead')
+              .populate('department')
+              .populate('participatingBots')
+              .populate('participatingAgents')
+              .populate({ path: 'requester', populate: { path: 'id_user' } })
+              .execPopulate(function (err, requestComplete) {
+                return resolve(requestComplete);
+              });
+
+          }
+
+          request.followers = newfollowers;
+
+          //cacheinvalidation
+          return request.save(function (err, updatedRequest) {
+            // dopo save non aggiorna participating
+            if (err) {
+              winston.error("Error setFollowersByRequestId", err);
+              return reject(err);
+            }
+
+            return updatedRequest
+              .populate('lead')
+              .populate('department')
+              .populate('participatingBots')
+              .populate('participatingAgents')
+              .populate({ path: 'requester', populate: { path: 'id_user' } })
+              .execPopulate(function (err, requestComplete) {
+
+
+                if (err) {
+                  winston.error("Error getting setFollowersByRequestId", err);
+                  return reject(err);
+                }
+
+                winston.debug("oldfollowers ", oldfollowers);
+
+                requestEvent.emit('request.update', requestComplete);
+                requestEvent.emit("request.update.comment", { comment: "FOLLOWERS_SET", request: requestComplete });//Deprecated
+                requestEvent.emit("request.updated", { comment: "FOLLOWERS_SET", request: requestComplete, patch: {} });
+
+                // requestEvent.emit('request.followers.update', {beforeRequest:request, 
+                //             removedParticipants:removedParticipants, 
+                //             addedParticipants:addedParticipants,
+                //             request:requestComplete});
+
+                return resolve(requestComplete);
+              });
+          });
+
+        });
+
+
+    });
+  }
+
+
+
+
+
+
+  removeFollowerByRequestId(request_id, id_project, member) {
+    winston.debug("request_id", request_id);
+    winston.debug("id_project", id_project);
+    winston.debug("member", member);
+
+    return new Promise(function (resolve, reject) {
+
+
+
+      if (member == undefined) {
+        var err = "removeFollowerByRequestId error, member field is null";
+        winston.error(err);
+        return reject(err);
+      }
+
+
+      return Request
+        .findOne({ request_id: request_id, id_project: id_project })
+        // .populate('participatingAgents')  //for abandoned_by_project_users
+        // qui cache    
+        .exec(async (err, request) => {
+
+          if (err) {
+            winston.error("Error removing follower ", err);
+            return reject(err);
+          }
+
+          if (!request) {
+            winston.error('Request not found for request_id ' + request_id + ' and id_project ' + id_project);
+            return reject('Request not found for request_id ' + request_id + ' and id_project ' + id_project);
+          }
+
+          var index = request.followers.indexOf(member);
+          winston.debug("index", index);
+
+          if (index > -1) {
+            request.followers.splice(index, 1);
+            // winston.debug(" request.participants",  request.participants);
+
+
+            // winston.debug(" request",  request);
+            //cacheinvalidation
+            return request.save(function (err, savedRequest) {
+              if (err) {
+                winston.error("Error saving removed follower ", err);
+                return reject(err);
+              }
+
+              return savedRequest
+                .populate('lead')
+                .populate('department')
+                .populate('participatingBots')
+                .populate('participatingAgents')
+                // .populate('followers')  
+                .populate({ path: 'requester', populate: { path: 'id_user' } })
+                .execPopulate(function (err, requestComplete) {
+
+                  if (err) {
+                    winston.error("Error getting removed follower ", err);
+                    return reject(err);
+                  }
+
+
+                  requestEvent.emit('request.update', requestComplete);
+                  requestEvent.emit("request.update.comment", { comment: "FOLLOWER_REMOVE", request: requestComplete });//Deprecated
+                  requestEvent.emit("request.updated", { comment: "FOLLOWER_REMOVE", request: requestComplete, patch: { member: member } });
+                  requestEvent.emit('request.followers.leave', { member: member, request: requestComplete });
+
+
+                  return resolve(requestComplete);
+
+                });
+            });
+
+
+          } else {
+            winston.verbose('Request member ' + member + ' already not found for request_id ' + request_id + ' and id_project ' + id_project);
+
+            return request
+              .populate('lead')
+              .populate('department')
+              .populate('participatingBots')
+              .populate('participatingAgents')
+              // .populate('followers')   
+              .populate({ path: 'requester', populate: { path: 'id_user' } })
+              .execPopulate(function (err, requestComplete) {
+                return resolve(requestComplete);
+              });
+          }
+
+        });
+    });
+  }
+
+
+
+  async getRequestParametersFromChatbot(request_id) {
+
+    return new Promise( async (resolve, reject) => {
+      await axios({
+        url: TILEBOT_ENDPOINT + 'reserved/parameters/requests/' + request_id,
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        method: 'GET'
+      }).then((response) => {
+        winston.debug("[RequestService] response: ", response);
+        resolve(response.data);
+      }).catch((err) => {
+        winston.error("get request parameter error:", {
+          message: err.message,
+          data: err.response?.data
+        });
+        reject(err);
+      })
+    })
+
+  }
+
+  async getConversationsCount(id_project, status, preflight, hasBot, startDate, endDate) {
+    return new Promise( async (resolve, reject) => {
+      let query = { id_project: id_project, status: status, preflight: preflight, draft: { $in: [false, null] }};
+      if (hasBot != null) {
+        query.hasBot = hasBot;
+      }
+      if (status === 201) {
+        query.status = {
+          $in: [100,200]
+        }
+      }
+      if (preflight === null) {
+        delete query.preflight;
+      }
+      if (startDate && endDate) {
+        query.createdAt = { $gte: startDate.toDate(), $lte: endDate.toDate() }
+      }
+      winston.debug("getConversationsCount query: ", query)
+      let count = await Request.countDocuments(query).catch((err) => {
+        winston.error("Error getting requests count: ", err);
+        reject(err);
+      })
+      winston.verbose("Requests found for query " + JSON.stringify(query) + ": " + count);
+      resolve(count)
+    })
+  }
+
+  emitParticipantsEvents(beforeRequest, requestComplete, oldParticipants) {
+    const newParticipants = requestComplete.participants;
+  
+    const removedParticipants = oldParticipants.filter(
+      p => !newParticipants.includes(p)
+    );
+    const addedParticipants = newParticipants.filter(
+      p => !oldParticipants.includes(p)
+    );
+  
+    requestEvent.emit("request.update", requestComplete);
+    requestEvent.emit("request.updated", {
+      comment: "REROUTE",
+      request: requestComplete,
+      patch: { removedParticipants, addedParticipants }
+    });
+  
+    requestEvent.emit("request.participants.update", {
+      beforeRequest,
+      removedParticipants,
+      addedParticipants,
+      request: requestComplete
+    });
+  }
 
 
 }

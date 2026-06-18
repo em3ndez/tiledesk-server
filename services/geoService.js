@@ -2,12 +2,21 @@
 
 var requestEvent = require("./../event/requestEvent");
 var Location = require("./../models/location");
+var Request = require("./../models/request");
+
 
 var winston = require('../config/winston');
 var geoip = require('geoip-lite');
 
 class GeoService {
 
+    constructor() {
+        this.enabled = true;
+        if (process.env.GEO_SERVICE_ENABLED=="false" || process.env.GEO_SERVICE_ENABLED==false) {
+            this.enabled = false;
+        }
+        winston.debug("GeoService this.enabled: "+ this.enabled);
+    }
 
 
   // https://medium.com/@rossbulat/node-js-client-ip-location-with-geoip-lite-fallback-c25833c94a76
@@ -16,7 +25,12 @@ class GeoService {
 
   listen() {
     
-    winston.info("GeoService listener started");
+    if (this.enabled==true) {
+        winston.info("GeoService listener started");
+    } else {
+        return winston.info("GeoService listener disabled");
+    }
+    
 
 
  
@@ -36,18 +50,29 @@ class GeoService {
   //     area: 200 }
 
 
-  requestEvent.on('request.create', function(request) {
 
-    winston.debug("request", request.toObject());
+  var requestCreateKey = 'request.create';
+  if (requestEvent.queueEnabled) {
+    requestCreateKey = 'request.create.queue';
+  }
+  winston.debug('GeoService requestCreateKey: ' + requestCreateKey);
+
+
+  requestEvent.on(requestCreateKey, function(request) {
+
+    setImmediate(() => { 
+
+    winston.debug("request", request);
 
     var ip = (request.location && request.location.ipAddress) || (request.attributes && request.attributes.ipAddress);
     winston.debug("ip" + ip);
     if (ip) {
         var geo = geoip.lookup(ip);  
-        winston.verbose("Geo result", geo);
+        winston.debug("Geo result", geo);
 
-        // var update = {};
+        
         if (geo) {
+            var update = {};
 
             if (!request.location) {
                 request.location = {};
@@ -55,25 +80,25 @@ class GeoService {
 
             if (geo.country && !request.location.country) {
                 winston.debug("geo.country:"+ geo.country);
-                request.location.country = geo.country;
-                // update["location.country"] = geo.country;
+                // request.location.country = geo.country;
+                update["location.country"] = geo.country;
 
             }
             if (geo.region && !request.location.region) {
                 winston.debug("geo.region: "+ geo.region);
-                request.location.region = geo.region;
-                // update["location.region"] = geo.region;
+                // request.location.region = geo.region;
+                update["location.region"] = geo.region;
             }
             if (geo.city && !request.location.city) {
                 winston.debug("geo.city: " + geo.city);
-                request.location.city = geo.city;
-                // update["location.city"] = geo.city;
+                // request.location.city = geo.city;
+                update["location.city"] = geo.city;
             }
 
             if (!request.location.ipAddress) {
                 winston.debug("request.location.ipAddress: " + request.location.ipAddress);
-                request.location.ipAddress = ip;
-                // update["location.city"] = geo.city;
+                // request.location.ipAddress = ip;
+                update["location.ipAddress"] = ip;
             }
 
             // console.log(request.location.toString());
@@ -95,8 +120,8 @@ class GeoService {
                 ) ) {
                 // if (geo.ll && request.location.geometry != undefined) {
                 winston.debug("geo.ll: " + geo.ll);
-                request.location.geometry = {type: "Point", coordinates: geo.ll};
-                // update["location.geometry"]  = {type: "Point", coordinates: geo.ll};
+                // request.location.geometry = {type: "Point", coordinates: geo.ll};
+                update["location.geometry"]  = {type: "Point", coordinates: geo.ll};
             }
             
             
@@ -104,21 +129,32 @@ class GeoService {
             // winston.info("setObj", setObj);
             // winston.info("update", update);
 
-            winston.debug("geo request saving", request);
+            winston.debug("geo request saving", update);
+            // winston.debug("geo request saving", request);
 
-            request.markModified('location');
-            request.save(function(err, reqL) {            
-            // return Request.findByIdAndUpdate("5fb297bd1d838b14607b3b62", update, { new: true, upsert: false }).exec( function(err, reqL) {                
+
+            // if (request.markModified) {
+            //     request.markModified('location');
+            // }
+            
+
+            //when queue is enabled request.save is undefined because request is a plain object
+            // request.save(function(err, reqL) {            
+            return Request.findByIdAndUpdate(request.id, update, { new: true, upsert: false }).exec( function(err, reqL) {                
                 if (err) {
                     return winston.error("Error saving location metadata for request with id " + request._id, err);
                 }
                 return winston.verbose("Saved location metadata for request with id " + request._id);
             }); 
+
+            //TODO AGGIORNA ANCHE LEAD e req.snapshot.lead?
+            // leggi ip da request e nn da attributes
                
         }
     }
     });
-  }
+    });
+}
 
 
 }

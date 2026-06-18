@@ -11,15 +11,35 @@ var request = require('retry-request', {
 var webhook_origin = process.env.WEBHOOK_ORIGIN || "http://localhost:3000";
 winston.debug("webhook_origin: "+webhook_origin);
 
+var cacheUtil = require('../utils/cacheUtil');
+var cacheEnabler = require("../services/cacheEnabler");
+
+
+
+
 class BotSubscriptionNotifier {
    
   
-  notify(bot,botWithSecret, payload) {
+  notify(bot,secret, payload) {
   
-      winston.verbose("BotSubscriptionNotifier bot", bot.toObject(), 'payload', payload );
+      winston.debug("BotSubscriptionNotifier bot", bot.toObject());
+      winston.debug("BotSubscriptionNotifier payload", payload );
 
       var url = bot.url;
 
+      if (bot.type == "tilebot" && payload.request && payload.request.attributes && payload.request.attributes.sourcePage  && payload.request.attributes.sourcePage.indexOf("&td_draft=true")>-1) {
+          url = url.substr(0,url.lastIndexOf("/")+1)+bot.id;
+        // url = url + "?forced_bot_id="+bot.id;   
+        winston.verbose("BotSubscriptionNotifier it is a tilebot test page. Switch to current chabot id: "+ url);              
+      }
+
+      // if (url.startsWith("$ext_url")) {
+      //   // url = url.replace ("$res_bot_url", prendi da env)
+      // }
+
+      //Removed snapshot from request 
+      delete payload.request.snapshot
+      
       var json = {timestamp: Date.now(), payload: payload};
     
 
@@ -34,7 +54,14 @@ class BotSubscriptionNotifier {
       };
 
       // TODO metti bot_? a user._id
-      var token = jwt.sign(bot.toObject(), botWithSecret.secret, signOptions);
+
+      // tolgo description, attributes
+      let botPayload = bot.toObject();
+      delete botPayload.secret;
+      delete botPayload.description;
+      delete botPayload.attributes;
+
+      var token = jwt.sign(botPayload, secret, signOptions);
       json["token"] = token;
 
 
@@ -53,8 +80,10 @@ class BotSubscriptionNotifier {
 
           }, function(err, result, json){            
             winston.verbose("SENT notify for bot with url " + url +  " with err " + err);
+            winston.debug("SENT notify for bot with url ", result);
             if (err) {
               winston.error("Error sending notify for bot with url " + url + " with err " + err);
+              //TODO Reply with error
               // next(err, json);
             }
           });
@@ -67,14 +96,32 @@ class BotSubscriptionNotifier {
     //modify to async
     botEvent.on('bot.message.received.notify.external', function(botNotification) {
       var bot = botNotification.bot;
-      Faq_kb.findById(bot._id).select('+secret').exec(function (err, botWithSecret){
-        if (err) {
-          winston.debug('Error getting botWithSecret', err);
-        }
-        botSubscriptionNotifier.notify(bot, botWithSecret, botNotification.message);
-      });
+      var secret = bot.secret;
+      winston.debug('bot.message.received.notify.external: '+secret);
+
+    //   winston.debug('getting botWithSecret');
+    //   let qbot = Faq_kb.findById(bot._id).select('+secret')
+
+    //   if (cacheEnabler.faq_kb) {
+    //     let id_project = bot.id_project;
+    //     winston.debug("id_project.id_project:"+id_project);
+    //     qbot.cache(cacheUtil.defaultTTL, id_project+":faq_kbs:id:"+bot._id+":secret")
+    //     winston.debug('faq_kb BotSubscriptionNotifier cache enabled');
+    //   }
+
+    //   qbot.exec(function (err, botWithSecret){   //TODO add cache_bot_here????
+    //     if (err) {
+    //       winston.debug('Error getting botWithSecret', err);
+    //     }
+    //     botSubscriptionNotifier.notify(bot, botWithSecret, botNotification.message);
+    //   });
       
+    botSubscriptionNotifier.notify(bot, secret, botNotification.message);
+
+
     });
+
+
 
     winston.info('BotSubscriptionNotifier started');
 

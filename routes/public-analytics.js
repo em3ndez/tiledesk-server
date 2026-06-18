@@ -11,6 +11,9 @@ var winston = require('../config/winston');
     //winston.debug(req.params);
     //winston.debug("req.projectid",  req.projectid);    
    
+    // res.json([]);
+
+
     AnalyticResult.aggregate([
         //last 4
         { $match: {"id_project":req.projectid, "createdAt" : { $gte : new Date((new Date().getTime() - (4 * 60 * 60 * 1000))) }} },

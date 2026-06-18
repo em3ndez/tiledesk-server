@@ -5,15 +5,17 @@ var winston = require('../config/winston');
 var Channel = require('../models/channel');
 var winston = require('../config/winston');
 var RequestConstants = require("../models/requestConstants");
+var ChannelConstants = require("../models/channelConstants");
 
 var ProjectUserSchema = require("../models/project_user").schema;
 var RequestStatus = require("../models/requestStatus");
 var LeadSchema = require("../models/lead").schema; //it's not used but i you run test like (mocha departmentService.js) it throws this not blocking exception: error: error getting requestSchema hasn't been registered for model "lead".
 var NoteSchema = require("../models/note").schema;
+
 var TagSchema = require("../models/tag");
 var LocationSchema = require("../models/location");
 var RequestSnapshotSchema = require("../models/requestSnapshot");
-
+var ContactSchema = require("../models/contact");
 var defaultFullTextLanguage = process.env.DEFAULT_FULLTEXT_INDEX_LANGUAGE || "none";
 winston.info("Request defaultFullTextLanguage: "+ defaultFullTextLanguage);
 
@@ -43,21 +45,22 @@ var RequestSchema = new Schema({
     type: String,
     required: true,
     index: true,
-    // unique: true        
+    unique: true        
 
   },
 
+  // TODO attiva solo condizionalmente per performance
   ticket_id: {
     type: Number,
     // required: true,
     index: true
   },
-
+// The user who is asking for support through a ticket is the requester. For most businesses that use Tiledesk Support, the requester is a customer, but requesters can also be agents in your Tiledesk Support instance.  requester: {
   requester: {
     type: Schema.Types.ObjectId,
     ref: 'project_user',
     required: false, //ENABLEIT,
-    index: true
+    // index: true //unused
   },
 
 
@@ -95,12 +98,11 @@ var RequestSchema = new Schema({
     type: String,
     required: true
   },
-
   status: {
     type: Number,
     required: false,
     default: RequestConstants.UNASSIGNED,
-    index: true
+    // index: true //unused
   }, 
 
 
@@ -128,16 +130,26 @@ var RequestSchema = new Schema({
     required: false,
     index: true,
   },
+  
+  priority: {
+    type: String,
+    index: true,
+    default: "medium" //translate on client side
+  },
+
+  followers: [{ 
+    type: Schema.Types.ObjectId, 
+    ref: 'project_user' }],
 
   participantsAgents: {  
     type: Array,
     required: false,
-    index: true,
+    // index: true, //i think unused
   },
   participantsBots: {  
     type: Array,
     required: false,
-    index: true,
+    // index: true, //i think unused
   },
   department: {
     type: Schema.Types.ObjectId,
@@ -154,20 +166,20 @@ var RequestSchema = new Schema({
   // First reply time is the time between ticket creation and the first public comment from an agent, displayed in minutes. Some qualifications include:
   first_response_at: {
     type: Date,
-    index: true
+    // index: true // unused
   },
 
   //timestamp when the agent reply the first time to a visitor
   assigned_at: {
     type: Date,
-    index: true
+    // index: true //unused
   },
 
   // Wait Time (Average and Longest): The average and longest times visitors have been waiting for their chats to be served.
   // Wait time is calculated as duration between the first visitor message in the chat and the first agent message. Wait time will be 0 for agent initiated or trigger initiated chats.
   waiting_time: {
     type: Number,
-    index: true
+    // index: true // why?
   },
 
 
@@ -180,8 +192,14 @@ var RequestSchema = new Schema({
   //   default: 0
   // },
 
-  closed_at: {
+  closed_at: { 
     type: Date
+  },
+  closed_by: { 
+    type: String
+  },
+  duration: {
+    type: Number
   },
 
   tags: [TagSchema],
@@ -198,7 +216,11 @@ var RequestSchema = new Schema({
   }, 
   snapshot: {
     type: RequestSnapshotSchema,
-    select: true
+    select: true,
+    //index: false,
+    // includeIndices: false,
+    excludeIndexes: true //testa bene
+
     // select: false
   }, 
 
@@ -247,17 +269,44 @@ var RequestSchema = new Schema({
     required: false
   },
   location: LocationSchema,
+  auto_close: {
+    type: Number,
+    index: true
+  },
   id_project: {
     type: String,
     required: true,
     index: true
   },
-
+  smartAssignment: {
+    type: Boolean,
+    default: function() {
+      // winston.info("smartAssignment default this.channel.name:" + this.channel.name);
+      if (this.channel && (this.channel.name===ChannelConstants.FORM || this.channel.name===ChannelConstants.EMAIL )) {
+        // winston.info("smartAssignment default return false");
+        return false;
+      }else {
+        // winston.info("smartAssignment default return true");
+        return true;
+      }
+    },
+    index: true
+  },
+  workingStatus: { //new, pending, open
+    type: String,
+    required: false,
+    index: true
+  },
   createdBy: {
     type: String,
     required: true
   },
-
+  draft: {
+    type: Boolean,
+    required: false,
+    index: true
+  },
+  contact: ContactSchema,
 }, {
   timestamps: true,
   toObject: { virtuals: true }, //IMPORTANT FOR trigger used to polulate messages in toJSON// https://mongoosejs.com/docs/populate.html
@@ -410,7 +459,9 @@ RequestSchema.index({ id_project: 1, request_id: 1 }
 // https://docs.mongodb.com/manual/reference/text-search-languages/#text-search-languages
 
 //TODO cambiare dummy con language? attento che il codice deve essere compatibile
-RequestSchema.index({transcript: 'text', rating_message: 'text', subject: 'text', "tags.tag": 'text', "notes.text": 'text'},  
+
+
+RequestSchema.index({id_project: 1, transcript: 'text', rating_message: 'text', subject: 'text', "tags.tag": 'text', "notes.text": 'text', "snapshot.lead.email": 'text', "snapshot.lead.fullname": 'text' },  
  {"name":"request_fulltext","default_language": defaultFullTextLanguage,"language_override": "dummy"}); // schema level
 
 //  let query = {id_project: operatorSelectedEvent.id_project, participants: { $exists: true, $ne: [] }};
@@ -419,6 +470,52 @@ RequestSchema.index({ id_project: 1, participants: 1});
 //  https://docs.mongodb.com/manual/core/index-compound/ The order of the fields listed in a compound index is important. The index will contain references to documents sorted first by the values of the item field and, within each value of the item field, sorted by values of the stock field. See Sort Order for more information
 RequestSchema.index({ id_project: 1, status: 1, updatedAt: -1 }); // query for websocket
 RequestSchema.index({ id_project: 1, status: 1, preflight:1, updatedAt: -1 }); // query for websocket
+RequestSchema.index({ id_project: 1, preflight:1, updatedAt: -1 }); // used query ws (topic.endsWith('/requests'))
+
+RequestSchema.index({ hasBot: 1, createdAt: 1 }); // suggested by atlas
+
+
+// suggested by atlas
+RequestSchema.index({ lead: 1, id_project: 1, participants: 1, preflight: 1, createdAt: -1 });
+// suggested by atlas
+RequestSchema.index({ lead: 1, id_project: 1, preflight: 1, createdAt: -1 });
+
+// suggested by atlas
+RequestSchema.index({ lead: 1, "snapshot.agents.id_user": 1, id_project: 1, preflight: 1, createdAt: -1 });
+
+
+// suggested by atlas
+RequestSchema.index({ id_project: 1, ticket_id: 1 });
+
+// suggested by atlas
+RequestSchema.index({ id_project: 1, createdAt: 1, preflight: 1});
+
+//suggested by atlas profiler. Used by auto closing requests
+RequestSchema.index({ hasBot: 1, status: 1, createdAt: 1});
+
+// suggested by atlas
+RequestSchema.index({ "channel.name": 1, id_project: 1, preflight: 1, "snapshot.requester.uuid_user": 1, createdAt: - 1, status: 1 })
+RequestSchema.index({ id_project: 1, preflight: 1, "snapshot.agents.id_user": 1, updatedAt: -1, draft: 1, status: 1 })
+RequestSchema.index({ id_project: 1, participants: 1, preflight: 1, updatedAt: -1, draft: 1, status: 1 })
+RequestSchema.index({ id_project: 1, preflight: 1, updatedAt: -1, draft: 1, status: 1 })
+RequestSchema.index({ id_project: 1, preflight: 1, "snapshot.requester.uuid_user": 1, createdAt: -1, status: 1 })
+RequestSchema.index({ department: 1, id_project: 1, participants: 1, preflight: 1, createdAt: -1, status: 1 })
+RequestSchema.index({ id_project: 1, preflight: 1, createdAt: -1, status: 1 });
+RequestSchema.index({ id_project: 1, preflight: 1, createdAt: 1 })
+RequestSchema.index({ participants: 1, id_project: 1, createdAt: -1, status: 1 })
+RequestSchema.index({ id_project: 1, "snapshot.lead.email": 1, createdAt: -1, status: 1 })
+RequestSchema.index({ id_project: 1, createdAt: -1, status: 1 })
+RequestSchema.index({ id_project: 1, preflight: 1, smartAssignment: 1, "snapshot.department.routing": 1, createdAt: 1, status: 1 })
+
+RequestSchema.index({ status: 1, hasBot: 1, updatedAt: 1 }) // For closing unresponsive requests
+RequestSchema.index({ status: 1, hasBot: 1, workingStatus: 1, updatedAt: 1 }) // For closing unresponsive requests
+
+// Contact search by phone / email
+RequestSchema.index({ id_project: 1, 'contact.phone': 1 });
+RequestSchema.index({ id_project: 1, 'contact.email': 1 });
+
+// ERROR DURING DEPLOY OF 2.10.27
+//RequestSchema.index({ id_project: 1, participants: 1, "snapshot.agents.id_user": 1, createdAt: -1, status: 1 })
 
 //   cannot index parallel arrays [agents] [participants] {"driv
 // RequestSchema.index({ id_project: 1, status: 1, preflight:1, participants:1, "agents.id_user":1, updatedAt: -1 }); //NN LO APPLICA
@@ -433,7 +530,7 @@ RequestSchema.index({ id_project: 1, status: 1, preflight:1, updatedAt: -1 }); /
 var request =  mongoose.model('request', RequestSchema);
 if (process.env.MONGOOSE_SYNCINDEX) {
   request.syncIndexes();
-  winston.info("message syncIndexes")
+  winston.verbose("message syncIndexes")
 
 }
 

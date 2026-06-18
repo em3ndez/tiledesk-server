@@ -15,12 +15,21 @@ const FileGridFsService = require('../services/fileGridFsService.js');
 const { path } = require('../models/tag');
 
 const fileService = new FileGridFsService("files");
+const fallbackFileService = new FileGridFsService("images");
 
 
 
 
+let MAX_UPLOAD_FILE_SIZE = process.env.MAX_UPLOAD_FILE_SIZE;
+let uploadlimits = undefined;
 
-const upload = multer({ storage: fileService.getStorage("files") });
+if (MAX_UPLOAD_FILE_SIZE) {
+  uploadlimits = {fileSize: parseInt(MAX_UPLOAD_FILE_SIZE)} ;
+  winston.info("Max upload file size is : " + MAX_UPLOAD_FILE_SIZE);
+} else {
+  winston.info("Max upload file size is infinity");
+}
+const upload = multer({ storage: fileService.getStorage("files"),limits: uploadlimits});
 
 /*
 curl -u andrea.leo@f21.it:123456 \
@@ -29,14 +38,16 @@ curl -u andrea.leo@f21.it:123456 \
 
   */
 
-router.post('/users', [passport.authenticate(['basic', 'jwt'], { session: false }), validtoken], upload.single('file'), (req, res, next) => {
-  winston.info("files/users")
-      return res.status(201).json({
-          message: 'File uploded successfully',
-          filename: req.file.filename
-      });    
+// DEPRECATED FROM VERSION 2.14.24
+// router.post('/users', [passport.authenticate(['basic', 'jwt'], { session: false }), validtoken], upload.single('file'), (req, res, next) => {
 
-});
+//   winston.verbose("files/users")
+//   return res.status(201).json({
+//     message: 'File uploded successfully',
+//     filename: req.file.filename
+//   });
+
+// });
 
 /*
 curl \
@@ -47,44 +58,101 @@ curl \
 
   */
 
-router.post('/public', upload.single('file'), (req, res, next) => {
-  winston.debug("files/public")
-      return res.status(201).json({
-          message: 'File uploded successfully',
-          filename: req.file.filename
-      });    
+// DEPRECATED FROM VERSION 2.14.24
+// router.post('/public', upload.single('file'), (req, res, next) => {
+//   winston.debug("files/public")
+//       return res.status(201).json({
+//           message: 'File uploded successfully',
+//           filename: req.file.filename
+//       });    
+// });
+
+
+
+
+router.get("/", async (req, res) => {
+  winston.debug('path', req.query.path);
+  
+  let fService = fileService;
+  try {
+    let file = await fileService.find(req.query.path);
+    res.set({ "Content-Length": file.length});
+    res.set({ "Content-Type": file.contentType});
+  } catch (e) {
+    if (e.code == "ENOENT") {
+      winston.debug(`File ${req.query.path} not found on primary file service. Fallback to secondary.`)
+      
+      try {
+        let file = await fallbackFileService.find(req.query.path)
+        res.set({ "Content-Length": file.length });
+        res.set({ "Content-Type": file.contentType });
+        fService = fallbackFileService;
+      } catch (e) {
+        if (e.code == "ENOENT") {
+          winston.debug(`File ${req.query.path} not found on secondary file service.`)
+          return res.status(404).send({ success: false, error: 'File not found.' });
+        } else {
+          winston.error('Error getting file: ', e);
+          return res.status(500).send({success: false, error: 'Error getting file.'});
+        }
+      }
+    } else {
+      winston.error('Error getting file', e);
+      return res.status(500).send({success: false, error: 'Error getting file.'});
+    }
+  }
+  
+  fService.getFileDataAsStream(req.query.path).on('error', (e)=> {
+    if (e.code == "ENOENT") {
+      winston.debug('File not found: '+req.query.path);
+      return res.status(404).send({success: false, error: 'File not found.'});
+    } else {
+      winston.error('Error getting the file', e);
+      return res.status(500).send({success: false, error: 'Error getting file.'});
+    }      
+  }).pipe(res);
 });
 
 
-
-
-router.get("/", (req, res) => {
+router.get("/download", async (req, res) => {
   winston.debug('path', req.query.path);
-  // if (path.indexOf("/users/"))
-  fileService.getFileDataAsStream(req.query.path).pipe(res);
-  // const file = gfs
-  //   .find({
-  //     filename: req.query.path
-  //   })
-  //   .toArray((err, files) => {
-  //     if (!files || files.length === 0) {
-  //       return res.status(404).json({
-  //         err: "no files exist"
-  //       });
-  //     }
-  //     gfs.openDownloadStreamByName(req.query.path).pipe(res);
-  //   });
-});
-
-
-router.get("/download", (req, res) => {
-  winston.debug('path', req.query.path);
-  // if (path.indexOf("/users/"))
   let filename = pathlib.basename(req.query.path);
-  winston.info("filename:"+filename);
+  winston.debug("filename:"+filename);
+
+  let fService = fileService;
+  try {
+    await fileService.find(req.query.path);
+  } catch (e) {
+    if (e.code == "ENOENT") {
+      winston.debug(`File ${req.query.path} not found on primary file service. Fallback to secondary.`)
+      try {
+        await fallbackFileService.find(req.query.path);
+        fService = fallbackFileService;
+      } catch (e) {
+        if (e.code == "ENOENT") {
+          winston.debug(`File ${req.query.path} not found on secondary file service.`)
+          return res.status(404).send({ success: false, error: 'File not found.' });
+        } else {
+          winston.error('Error getting file: ', e);
+          return res.status(500).send({success: false, error: 'Error getting file.'});
+        }
+      }
+    } else {
+      winston.error('Error getting file', e);
+      return res.status(500).send({success: false, error: 'Error getting file.'});
+    }
+  }
 
   res.attachment(filename);
-  fileService.getFileDataAsStream(req.query.path).pipe(res);
+  fService.getFileDataAsStream(req.query.path).on('error', (e)=> {
+    if (e.code == "ENOENT") {
+      winston.debug('File not found: '+req.query.path);
+      return res.status(404).send({success: false, error: 'File not found.'});
+    } else {
+      winston.error('Error getting the file', e);
+      return res.status(500).send({success: false, error: 'Error getting file.'});
+    }      
+  }).pipe(res);
 });
 
 

@@ -56,8 +56,9 @@ class Chat21Handler {
     typing(message, timestamp) {
         return new Promise(function (resolve, reject) {
 
+            // if privateFor skip typing
             //no typing for subtype info
-            if (message.attributes && message.attributes.subtype && message.attributes.subtype==='info') {
+            if (message.attributes && message.attributes.subtype && (message.attributes.subtype==='info' || message.attributes.subtype==='private')) {
                 return resolve();
             }else {
                 chat21.conversations.typing(message.recipient, message.sender, message.text, timestamp).finally(function() {
@@ -84,6 +85,8 @@ class Chat21Handler {
 
         
       
+        // chat21Handler on worker is loaded with stadard events like request.create and NOT request.create.queue because it is used internally by the worker when the request is closed by ChatUnhandledRequestScheduler
+
         // su projectUser create e update
         authEvent.on('user.signup', function(userData) {
             var firstName = userData.savedUser.firstname;
@@ -183,7 +186,6 @@ class Chat21Handler {
 
 
     // quando passa da lead temp a default aggiorna tutti va bene?        
-
          leadEvent.on('lead.update', function(lead) {
             //  non sembra funzionare chiedi a Dario dove prende le info
             setImmediate(() => {
@@ -197,7 +199,7 @@ class Chat21Handler {
                         return 0;
                     }
                     if (!requests || (requests && requests.length==0)) {
-                        winston.warn("No request found for lead id " +lead._id );
+                        winston.verbose("No request found for lead id " +lead._id );
                         return 0;
                     }
                     
@@ -245,16 +247,28 @@ class Chat21Handler {
         });
 
 
+        messageEvent.on('message.test', function(message) {
+        
+            winston.info("Chat21Sender message.test");
 
+            chat21.auth.setAdminToken(adminToken);
+
+            return  chat21.messages.sendToGroup(message.senderFullname,     message.recipient, 
+                message.recipient_fullname, message.text, message.sender, message.attributes, message.type, message.metadata, message.timestamp, message.group)
+                        .then(function(data){
+                            winston.info("Chat21Sender sendToGroup test: "+ JSON.stringify(data));
+                        });
+        });
        
-
+        // chat21Handler on worker is loaded with stadard events like request.create and NOT request.create.queue because it is used internally by the worker when the request is closed by ChatUnhandledRequestScheduler
         messageEvent.on('message.sending', function(message) {
 
             // setImmediate(() => {
                 // TODO perche nn c'è setImmedite? per performace
 
 
-                    winston.verbose("Chat21Sender on message.sending ",  message);
+                    winston.verbose("Chat21Sender on message.sending: "+  message.text);
+                    winston.debug("Chat21Sender on message.sending ",  message);
                    
                    if (message && 
                     message.status === MessageConstants.CHAT_MESSAGE_STATUS.SENDING &&
@@ -278,10 +292,15 @@ class Chat21Handler {
 
                         attributes['projectId'] = message.id_project; //TODO not used. used by ionic to open request detail ???
                         
+                        if (message.channel && message.channel.name) {
+                            attributes['channel'] = message.channel.name;
+                        }
+                        
                        
 
 
-                        winston.verbose("Chat21Sender sending message.sending ",  message);
+                        winston.verbose("Chat21Sender sending message.sending: "+  message.text);
+                        winston.debug("Chat21Sender sending message.sending ",  message);
 
                         // chat21Util.getParsedMessage().then(function(messageData) {
                         //     message = messageData;
@@ -298,12 +317,16 @@ class Chat21Handler {
                             }
 
                             var recipient_fullname = "Guest"; 
-                            // TODO qui va message.recipient_fullname ma nn c'è
+                            // guest_here
+                        
                             if (message.request && message.request.lead && message.request.lead.fullname) {
                                 recipient_fullname = message.request.lead.fullname;
                             }
                             if (message.request && message.request.subject ) {
                                 recipient_fullname = message.request.subject;
+                            }
+                            if (message.request && message.request.channel  && message.request.channel.name ) {
+                                attributes['request_channel'] = message.request.channel.name;
                             }
 
                             /*
@@ -331,16 +354,24 @@ class Chat21Handler {
                             }    
                             */   
                          
+                            // performance console log
+                            // console.log("************* send message chat21: "+new Date().toISOString(), message.text );
+
                            return  chat21.messages.sendToGroup(message.senderFullname,     message.recipient, 
                                 recipient_fullname, message.text, message.sender, attributes, message.type, message.metadata, timestamp)
                                         .then(function(data){
-                                            winston.verbose("Chat21Sender sendToGroup sent: "+ JSON.stringify(data));
+                                            winston.verbose("Chat21Sender sendToGroup sent: "+ JSON.stringify(data) + " for text message " + message.text);
                                     
 
                                             // chat21.conversations.stopTyping(message.recipient,message.sender);
-    
+                                            
+                                            
+                                            // performance console log
+                                            // console.log("************* senttt message chat21: "+new Date().toISOString(), message.text );
+
                                             chat21Event.emit('message.sent', data);
     
+                                                winston.debug("Message changeStatus 1");
                                                 messageService.changeStatus(message._id, MessageConstants.CHAT_MESSAGE_STATUS.DELIVERED) .then(function(upMessage){
                                                     winston.debug("Chat21 message sent ", upMessage.toObject());                                        
                                                 }).catch(function(err) {
@@ -365,6 +396,7 @@ class Chat21Handler {
 
                             chat21.auth.setAdminToken(adminToken);
 
+                            winston.debug("Chat21Sender");
                             // send: function(sender_fullname, recipient_id, recipient_fullname, text, sender_id, attributes, type, metadata){
                            return  chat21.messages.send(message.senderFullname,     message.recipient, 
                             message.recipientFullname, message.text, message.sender, message.attributes, message.type, message.metadata)
@@ -375,7 +407,7 @@ class Chat21Handler {
                                         // chat21.conversations.stopTyping(message.recipient,message.sender);
 
                                         chat21Event.emit('message.sent', data);
-
+                                            winston.debug("Message changeStatus 2");
                                             messageService.changeStatus(message._id, MessageConstants.CHAT_MESSAGE_STATUS.DELIVERED) .then(function(upMessage){
                                                 winston.debug("Chat21 message sent ", upMessage.toObject());                                        
                                             }).catch(function(err) {
@@ -416,7 +448,7 @@ class Chat21Handler {
                                        // chat21.conversations.stopTyping(message.recipient,message.sender);
 
                                        chat21Event.emit('message.sent', data);
-
+                                       winston.debug("Message changeStatus 3");
                                            messageService.changeStatus(message._id, MessageConstants.CHAT_MESSAGE_STATUS.DELIVERED) .then(function(upMessage){
                                                winston.debug("Chat21 message sent ", upMessage.toObject());                                        
                                            }).catch(function(err) {
@@ -490,6 +522,8 @@ class Chat21Handler {
             //     });
             // });
 
+
+            // chat21Handler on worker is loaded with stadard events like request.create and NOT request.create.queue because it is used internally by the worker when the request is closed by ChatUnhandledRequestScheduler
             requestEvent.on('request.create',  function(request) {          
 
                 winston.debug("chat21Handler requestEvent request.create called" , request);
@@ -522,7 +556,11 @@ class Chat21Handler {
                         // let membersArray = JSON.parse(JSON.stringify(members));
                         // winston.info("membersArray", membersArray);
 
-                        var gAttributes = request.attributes || {};
+                        var gAttributes = requestObj.attributes || {};
+                        // TODO ATTENTION change value by reference
+                        // var gAttributes = request.attributes || {}; //BUG LINK TO event emmiter obiect
+
+
                         // problema requester_id
                         gAttributes["requester_id"] = request.requester_id;
                     
@@ -562,16 +600,25 @@ class Chat21Handler {
                         var groupId = request.request_id;
 
                         var group_name = "Guest"; 
-
+                        // guest_here
+                        
                         if (request.lead && request.lead.fullname) {
                             group_name = request.lead.fullname;
                         }
                         if (request.subject) {
                             group_name = request.subject;
                         }
+                        
+                        // performance console log
+                        // console.log("************* before request.support_group.created: "+new Date().toISOString());
+
                         //TODO racecondition?
                         return chat21.groups.create(group_name, members, gAttributes, groupId).then(function(data) {
-                                winston.verbose("Chat21 group created: " + JSON.stringify(data));      
+                                winston.verbose("Chat21 group created: " + JSON.stringify(data));     
+
+                                // performance console log
+                                // console.log("************* after request.support_group.created: "+new Date().toISOString()); 
+
                                 requestEvent.emit('request.support_group.created', request);
 
                                 chat21Event.emit('group.create', data);      
@@ -589,9 +636,10 @@ class Chat21Handler {
             });
     
 
-            
-            requestEvent.on('request.close',  function(request) {          
+            // chat21Handler on worker is loaded with stadard events like request.create and NOT request.create.queue because it is used internally by the worker when the request is closed by ChatUnhandledRequestScheduler
 
+            requestEvent.on('request.close',  function(request) {          //request.close event here noqueued
+                winston.debug("request.close event here 8")
                 winston.debug("chat21Handler requestEvent request.close called" , request);
 
                 setImmediate(() => {
@@ -599,12 +647,12 @@ class Chat21Handler {
 
                         chat21.auth.setAdminToken(adminToken);                      
 
-                        winston.verbose("Chat21Sender archiving conversations for ",request.participants);
+                        winston.debug("Chat21Sender archiving conversations for ",request.participants);
 
                        //iterate request.participant and archive conversation
                        request.participants.forEach(function(participant,index) {
 
-                        winston.verbose("Chat21Sender archiving conversation: " + request.request_id + "for " + participant);
+                        winston.debug("Chat21Sender archiving conversation: " + request.request_id + "for " + participant);
 
                             chat21.conversations.archive(request.request_id, participant)
                                         .then(function(data){
@@ -618,7 +666,7 @@ class Chat21Handler {
                                 });
                        });
 
-                    //    archive: function(recipient_id, user_id){
+                        //    archive: function(recipient_id, user_id){
                        chat21.conversations.archive(request.request_id, "system")
                        .then(function(data){
                            winston.verbose("Chat21 archived for system"+ JSON.stringify(data));
@@ -651,7 +699,28 @@ class Chat21Handler {
                 });
             });
             
-            
+            requestEvent.on('request.delete', function(request) {
+
+                winston.debug("chat21Handler requestEvent request.delete called" , request);
+
+                setImmediate(() => {
+                    if (request.channelOutbound.name === ChannelConstants.CHAT21) {
+
+                        chat21.auth.setAdminToken(adminToken);
+
+                        winston.debug("Chat21Sender deleting conversations for ",request.participants);
+
+                        chat21.conversations.delete(request.request_id).then((data) => {
+                            winston.verbose("Chat21 conversation archived result "+ JSON.stringify(data));
+                            chat21Event.emit('conversation.deleted', data);                                               
+                        }).catch((err) => {
+                            winston.error("Chat21 deleted err", err);
+                            chat21Event.emit('conversation.deleted.error', err);
+                        })
+                    }
+                })
+
+            });
 
              requestEvent.on('request.participants.update',  function(data) {      
                  

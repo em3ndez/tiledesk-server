@@ -2,13 +2,15 @@ var express = require('express');
 var router = express.Router({mergeParams: true});
 var Event = require("./event");
 var winston = require('../../config/winston');
-const eventEvent = require('./eventEvent');
 var validtoken = require('../../middleware/valid-token');
 const eventService = require('./eventService');
 const { check, validationResult } = require('express-validator');
 var passport = require('passport');
 require('../../middleware/passport')(passport);
 var roleChecker = require('../../middleware/has-role');
+
+const messageEvent = require('../../event/messageEvent');
+
 
 router.post('/', [
   passport.authenticate(['basic', 'jwt'], 
@@ -31,36 +33,19 @@ router.post('/', [
     return res.status(422).json({ errors: errors.array() });
   }
 
-   
     var pu = undefined;
     if (req.projectuser) { //if the bot creates the event -> pu is undefined
       pu = req.projectuser.id
     }   
-    
-    // emit(name, attributes, id_project, project_user, createdBy, status, user) {
+    // // emit(name, attributes, id_project, project_user, createdBy, status, user) {
     eventService.emit(req.body.name, req.body.attributes, req.projectid, pu, req.user.id, undefined, req.user).then(function(event) {
-    res.json(event);
-  }).catch(function(err) {
-    winston.error('Error saving the event '+ JSON.stringify(savedEvent), err)
-    return res.status(500).send({success: false, msg: 'Error saving the event '+ JSON.stringify(savedEvent)});
-  });
 
-  // var newEvent = new Event({
-  //   name: req.body.name,
-  //   attributes: req.body.attributes,
-  //   id_project: req.projectid,
-  //   createdBy: req.user.id,
-  //   updatedBy: req.user.id
-  // });
+      res.json(event);
+    }).catch(function(err) {
+      winston.error('Error saving the event', err);
+      return res.status(500).send({success: false, msg: 'Error saving the event', error: err.message });
+    });
 
-  // newEvent.save(function(err, savedEvent) {
-  //   if (err) {
-  //     winston.error('Error saving the event '+ JSON.stringify(savedEvent), err)
-  //     return res.status(500).send({success: false, msg: 'Error saving the event '+ JSON.stringify(savedEvent)});
-  //   }
-
-  //   res.json(savedEvent);
-  // });
 });
 
 
@@ -137,7 +122,7 @@ router.get('/',   [passport.authenticate(['basic', 'jwt'],
       }
 
       //  collection.count is deprecated, and will be removed in a future version. Use Collection.countDocuments or Collection.estimatedDocumentCount instead
-      return Event.count(query, function (err, totalRowCount) {
+      return Event.countDocuments(query, function (err, totalRowCount) {
 
         var objectToReturn = {
           perPage: limit,

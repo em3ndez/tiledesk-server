@@ -8,6 +8,8 @@ var winston = require('../config/winston');
 const departmentEvent = require('../event/departmentEvent');
 const Request = require('../models/request');
 const RoleConstants = require ('../models/roleConstants')
+var cacheEnabler = require("../services/cacheEnabler");
+var cacheUtil = require("../utils/cacheUtil");
 
 class DepartmentService {
 
@@ -86,7 +88,7 @@ roundRobin(operatorSelectedEvent) {
 
       // let lastRequests = await 
       // requestcachefarequi nocachepopulatereqired
-      Request.find(query).sort({_id:-1}).limit(1).exec(function (err, lastRequests) {
+      Request.find(query).sort({_id:-1}).limit(1).exec(function (err, lastRequests) {  // cache_attention  use_lean use_select
           if (err) {
               winston.error('Error getting request for RoundRobinOperator', err); 
               return reject(err);
@@ -126,9 +128,27 @@ roundRobin(operatorSelectedEvent) {
             return resolve(operatorSelectedEvent);
           }          
 
-          // https://stackoverflow.com/questions/15997879/get-the-index-of-the-object-inside-an-array-matching-a-condition
-          let lastOperatorIndex = operatorSelectedEvent.available_agents.findIndex(projectUser => projectUser.id_user.toString() === lastOperatorId);
 
+            //when the agent has a custom auth jwt. so he has uuid_user and not id_user
+          // error: uncaughtException: Cannot read property 'toString' of undefined
+          // 2021-10-14T08:54:00.099370+00:00 app[web.1]: TypeError: Cannot read property 'toString' of undefined
+          // 2021-10-14T08:54:00.099371+00:00 app[web.1]:     at /app/services/departmentService.js:130:119
+          // 2021-10-14T08:54:00.099372+00:00 app[web.1]:     at Array.findIndex (<anonymous>)
+          // 2021-10-14T08:54:00.099372+00:00 app[web.1]:     at /app/services/departmentService.js:130:74
+          // 2021-10-14T08:54:00.099372+00:00 app[web.1]:     at /app/node_modules/mongoose/lib/model.js:5074:18
+          // 2021-10-14T08:54:00.099381+00:00 app[web.1]:     at processTicksAndRejections (internal/process/task_q
+
+          // https://stackoverflow.com/questions/15997879/get-the-index-of-the-object-inside-an-array-matching-a-condition
+          let lastOperatorIndex = operatorSelectedEvent.available_agents.findIndex(projectUser =>  {
+                if (projectUser.id_user) {
+                  return projectUser.id_user.toString() === lastOperatorId;
+                } else { //when the agent has a custom auth jwt. so he has uuid_user and not id_user
+                  return projectUser.uuid_user === lastOperatorId;
+                }
+              }
+            );
+
+          
           // if lastOperatorIndex is -1(last operator is not available)->  that.nextOperator increment index +1 so it's work
 
 
@@ -172,7 +192,12 @@ getOperators(departmentid, projectid, nobot, disableWebHookCall, context) {
        // console.log("»»» »»» --> DEPT ID ", departmentid);
 
 
-    return Project.findOne({_id: projectid, status: 100}, function(err, project) {
+    let q = Project.findOne({_id: projectid, status: 100})
+    if (cacheEnabler.project) { 
+      q.cache(cacheUtil.longTTL, "projects:id:"+projectid)  //project_cache
+      winston.debug('project cache enabled for getOperators');
+    }
+    return q.exec(function(err, project){
       if (err) {
         winston.error('Project findById ', err);
         return reject(err);
@@ -187,6 +212,7 @@ getOperators(departmentid, projectid, nobot, disableWebHookCall, context) {
       // TODO questo lo abiliterei solo esplicitamete se si flagga opzione su progetto per performance
       if (disableWebHookCall==undefined) {
               //if pro enabled disableWebHookCall = false
+                              //secondo me qui manca un parentesi tonda per gli or
         if (project.profile && (project.profile.type === 'free' && project.trialExpired === false) || (project.profile.type === 'payment' && project.isActiveSubscription === true)) {
           // winston.info('disableWebHookCall pro');
           disableWebHookCall = false;
@@ -214,8 +240,9 @@ getOperators(departmentid, projectid, nobot, disableWebHookCall, context) {
         }
         // console.log("department", department);
         if (!department) {
-          winston.error("Department not found for query ", query);
-          return reject({ success: false, msg: 'Department not found.' });
+          // TODO: error log removed due to attempt to reduces logs when no department is found
+          winston.verbose("Department not found for projectid: "+ projectid +" for query: ", query, context);
+          return reject({ success: false, msg: 'Department not found for projectid: '+ projectid +' for query: ' + JSON.stringify(query) });
         }
         // console.log('OPERATORS - »»» DETECTED ROUTING ', department.routing)
         // console.log('OPERATORS - »»» DEPARTMENT - ID BOT ', department.id_bot)
@@ -245,9 +272,25 @@ getOperators(departmentid, projectid, nobot, disableWebHookCall, context) {
           // console.log('OPERATORS - »»»» BOT IS DEFINED - !!! DEPT HAS NOT GROUP ID')
           // console.log('OPERATORS - »»»» BOT IS DEFINED -> ID BOT', department.id_bot);
           // console.log('OPERATORS - »»»» nobot ', nobot)
-          var role = [RoleConstants.OWNER, RoleConstants.ADMIN,RoleConstants.SUPERVISOR, RoleConstants.AGENT];
-// attento indice
-          return Project_user.find({ id_project: projectid, role: { $in : role }, status: "active" }).exec(function (err, project_users) {
+          winston.debug("main_flow_cache_2 departmentService project users");
+          
+          
+          // rolequery
+          // var role = [RoleConstants.OWNER, RoleConstants.ADMIN, RoleConstants.SUPERVISOR, RoleConstants.AGENT];
+          // var qpu = Project_user.find({ id_project: projectid, role: { $in : role }, status: "active" });
+          var qpu = Project_user.find({ id_project: projectid, roleType: RoleConstants.TYPE_AGENTS, status: "active" });
+
+          
+          // use this. $in doesn't use index very well
+          // var qpu = Project_user.findOne({ id_project: projectid, $or: [{ "role": RoleConstants.AGENT }, { "role": RoleConstants.SUPERVISOR }, { "role":  RoleConstants.ADMIN }, { "role": RoleConstants.OWNER }], status: "active" })
+          
+          if (cacheEnabler.project_user) {
+            qpu.cache(cacheUtil.queryTTL, projectid+":project_users:query:teammates:available") //request_cache
+            winston.debug('project_user cache enabled');
+          }
+  
+  
+          return qpu.exec(function (err, project_users) {
             if (err) {
               winston.error('-- > 2 DEPT FIND BY ID ERR ', err)
               return reject(err);
@@ -265,6 +308,7 @@ getOperators(departmentid, projectid, nobot, disableWebHookCall, context) {
               return resolve ({ 
                               department: department, available_agents: _available_agents, agents: project_users, 
                               id_bot:department.id_bot, project: project,
+                              context: context,
                               // botprefix
                               operators: [{ id_user: 'bot_' + department.id_bot }] 
                              });
@@ -331,8 +375,7 @@ getOperators(departmentid, projectid, nobot, disableWebHookCall, context) {
   var that = this;
 
   return new Promise(function (resolve, reject) {
-
-    return Group.find({ _id: department.id_group }).exec(function (err, group) {
+    return Group.find({ _id: department.id_group, $or: [ { enabled: true }, { enabled: { $exists: false } } ] }).exec(function (err, group) {
       if (err) {
         winston.error('D-2 GROUP -> [ FIND PROJECT USERS: ALL and AVAILABLE (with OH) ] -> ERR ', err)
         return reject(err);
@@ -342,12 +385,12 @@ getOperators(departmentid, projectid, nobot, disableWebHookCall, context) {
         // console.log('D-2 GROUP -> [ FIND PROJECT USERS: ALL and AVAILABLE (with OH) ] -> MEMBERS LENGHT: ', group[0].members.length);
         // console.log('D-2 GROUP -> [ FIND PROJECT USERS: ALL and AVAILABLE (with OH) ] -> MEMBERS ID: ', group[0].members);
 
-        // , user_available: true
-        //Project_user.findAllProjectUsersByProjectIdWhoBelongsToMembersOfGroup(id_prject, group[0]);
-        // riprodurre su v2
-         return Project_user.find({ id_project: projectid, id_user: { $in : group[0].members}, role: { $in : [RoleConstants.OWNER, RoleConstants.ADMIN, RoleConstants.SUPERVISOR, RoleConstants.AGENT]}, status: "active" }).exec(function (err, project_users) {          
-          // uni error round robin
-        //return Project_user.find({ id_project: projectid, id_user: group[0].members, role: { $in : [RoleConstants.OWNER, RoleConstants.ADMIN, RoleConstants.AGENT]} }).exec(function (err, project_users) {
+   
+
+        // rolequery
+        
+         return Project_user.find({ id_project: projectid, id_user: { $in : group[0].members}, roleType: RoleConstants.TYPE_AGENTS, status: "active" }).exec(function (err, project_users) {          
+        //  return Project_user.find({ id_project: projectid, id_user: { $in : group[0].members}, role: { $in : [RoleConstants.OWNER, RoleConstants.ADMIN, RoleConstants.SUPERVISOR, RoleConstants.AGENT]}, status: "active" }).exec(function (err, project_users) {         
 
           // console.log('D-2 GROUP -> [ FIND PROJECT USERS: ALL and AVAILABLE (with OH) ] -> PROJECT ID ', projectid);
           if (err) {
@@ -368,8 +411,9 @@ getOperators(departmentid, projectid, nobot, disableWebHookCall, context) {
                 selectedoperator = that.getRandomAvailableOperator(_available_agents);
               }
 
-              let objectToReturn = { available_agents: _available_agents, agents: project_users, operators: selectedoperator, department: department, group: group, id_project: projectid, project: project };
+              let objectToReturn = { available_agents: _available_agents, agents: project_users, operators: selectedoperator, department: department, group: group, id_project: projectid, project: project,  context: context };
 
+              // var objectToReturnRoundRobin = objectToReturn;
               that.roundRobin(objectToReturn).then(function(objectToReturnRoundRobin){
 
                 winston.debug("context2",context);
@@ -391,7 +435,7 @@ getOperators(departmentid, projectid, nobot, disableWebHookCall, context) {
            
           } else {
             // here subscription notifier??
-            var objectToReturn = { available_agents: [], agents: [], operators: [] };
+            var objectToReturn = { available_agents: [], agents: [], operators: [], context: context };
             return resolve(objectToReturn);
           }
 
@@ -408,8 +452,20 @@ getOperators(departmentid, projectid, nobot, disableWebHookCall, context) {
 
   return new Promise(function (resolve, reject) {
 
-    var role = [RoleConstants.OWNER, RoleConstants.ADMIN, RoleConstants.SUPERVISOR, RoleConstants.AGENT];
-    return Project_user.find({ id_project: projectid , role: { $in : role }, status: "active" }).exec(function (err, project_users) {
+    // var role = [RoleConstants.OWNER, RoleConstants.ADMIN, RoleConstants.SUPERVISOR, RoleConstants.AGENT];
+// rolequery
+    var qpu = Project_user.find({ id_project: projectid, roleType: RoleConstants.TYPE_AGENTS, status: "active" });
+    // var qpu = Project_user.find({ id_project: projectid, role: { $in : role }, status: "active" });
+          
+    // use this. $in doesn't use index very well    
+    if (cacheEnabler.project_user) {
+      qpu.cache(cacheUtil.queryTTL, projectid+":project_users:query:teammates:available") //request_cache
+      winston.debug('project_user cache enabled');
+    }
+    // return Project_user.find({ id_project: projectid , role: { $in : role }, status: "active" }).exec(function (err, project_users) {
+    return qpu.exec(function (err, project_users) {
+
+
       if (err) {
         winston.error('D-3 NO GROUP -> [ FIND PROJECT USERS: ALL and AVAILABLE (with OH) ] -> ERR ', err)
         return reject(err);
@@ -429,7 +485,9 @@ getOperators(departmentid, projectid, nobot, disableWebHookCall, context) {
             selectedoperator = that.getRandomAvailableOperator(_available_agents);
           }
 
-          let objectToReturn = { available_agents: _available_agents, agents: project_users, operators: selectedoperator, department: department, id_project: projectid, project: project };
+          let objectToReturn = { available_agents: _available_agents, agents: project_users, operators: selectedoperator, department: department, id_project: projectid, project: project, context: context };
+
+          // var objectToReturnRoundRobin = objectToReturn;
 
           that.roundRobin(objectToReturn).then(function(objectToReturnRoundRobin) {
             winston.debug("context2",context);
@@ -456,7 +514,7 @@ getOperators(departmentid, projectid, nobot, disableWebHookCall, context) {
        
       } else {
         // here subscription notifier??
-        let objectToReturn = { available_agents: [], agents: [], operators: [] };
+        let objectToReturn = { available_agents: [], agents: [], operators: [], context: context };
         return resolve(objectToReturn);
       }
 
@@ -518,14 +576,48 @@ getOperators(departmentid, projectid, nobot, disableWebHookCall, context) {
 
 
  
+getDefaultDepartment(projectid) {
+  return new Promise(function (resolve, reject) {
+    let query = { default: true, id_project: projectid };
+    winston.debug('query ', query)
+    // console.log('query', query);
+    return Department.findOne(query).exec(function (err, department) {
+      // return Department.findOne(query).exec().then(function (department) {
 
+      if (err) {
+        winston.error('-- > 1 DEPT FIND BY ID ERR ', err)
+        return reject(err);
+      }
+      // console.log("department", department);
+      if (!department) {
+        // TODO: error log removed due to attempt to reduces logs when no department is found
+        winston.verbose("Department not found for projectid: "+ projectid +" for query: ", query, context);
+        return reject({ success: false, msg: 'Department not found for projectid: '+ projectid +' for query: ' + JSON.stringify(query) });
+      }
+      winston.debug('department ', department);
+
+      return resolve(department);
+    });
+  });
+}
 
  getRandomAvailableOperator(project_users_available) {
 
   // console.log('-- > OPERATORS [ getRandomAvailableOperator ] - PROJECT USER AVAILABLE LENGHT ', project_users_available.length);
   if (project_users_available.length > 0) {
+
+
+    // new
+                                  // num between 0 and 1 * es 3 -> 
+    // let randomIndex =  Math.round(Math.random() * project_users_available.length);
+    // // let randomIndex =  Math.floor(Math.random() * project_users_available.length);
+    
+    // console.log("randomIndex",randomIndex);
+    // var operator = project_users_available[randomIndex];
+    // // console.log('OPERATORS - SELECTED MEMBER ID', operator.id_user);
+
     var operator = project_users_available[Math.floor(Math.random() * project_users_available.length)];
-    // console.log('OPERATORS - SELECTED MEMBER ID', operator.id_user);
+
 
     return [{ id_user: operator.id_user }];
     // return [operator];
@@ -538,6 +630,21 @@ getOperators(departmentid, projectid, nobot, disableWebHookCall, context) {
   }
 }
 
+  /**
+   * Checks if the group belongs to a department of the project
+   * @param {String} projectId
+   * @param {String} groupId
+   * @returns {Promise<Boolean>} true if the group belongs to a department of the project, otherwise false
+   */
+  async isGroupInProjectDepartment(projectId, groupId) {
+    try {
+      const department = await Department.findOne({ id_project: projectId, id_group: groupId });
+      return !!department;
+    } catch (err) {
+      winston.error('Error in isGroupInProjectDepartment', err);
+      return false;
+    }
+  }
 
 
 }

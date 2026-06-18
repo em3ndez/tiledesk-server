@@ -25,7 +25,9 @@ class ConciergeBot {
             winston.info(" ConciergeBot request create", request);
             if (request.status < 100 && request.department.id_bot) {
                 // addParticipantByRequestId(request_id, id_project, member) {
-                    requestService.addParticipantByRequestId(request.request_id, request.id_project, "bot_"+request.department.id_bot);
+                    requestService.addParticipantByRequestId(request.request_id, request.id_project, "bot_"+request.department.id_bot).catch((err) => {
+                      winston.error("(ConciergeBot) addParticipantByRequestId error", err);
+                    });
 devi mandare un messaggio welcome tu altrimenti il bot inserito successivamente al primo messaggio non riceve il welcome iniziale
             }
         });
@@ -43,7 +45,10 @@ devi mandare un messaggio welcome tu altrimenti il bot inserito successivamente 
                 // winston.debug(" ConciergeBot message.request.first_text: "+message.request.first_text);
 
                 // lead_id used. Change it?
-                if (message.request && message.request.preflight === true  && message.sender == message.request.lead.lead_id && message.text != message.request.first_text ) {
+                
+                if (message.request && message.request.preflight === true  && message.sender == message.request.lead.lead_id && message.text != message.request.first_text) {
+                    winston.debug("conciergebot: " + message.request.first_text );
+                // if (message.request && message.request.preflight === true  && message.sender == message.request.lead.lead_id && message.text != message.request.first_text ) {
                     // if (message.request.status < 100 && message.sender == message.request.lead.lead_id && message.text != message.request.first_text ) {
                     // if (message.request.status < 100 && message.sender == message.request.lead.lead_id && message.text != message.request.first_text && !botId) {
                 
@@ -64,13 +69,25 @@ devi mandare un messaggio welcome tu altrimenti il bot inserito successivamente 
 
 
                         requestService.changeFirstTextAndPreflightByRequestId(message.request.request_id, message.request.id_project, first_text, false).then(function (reqChanged) {
-                        
-                            // requestService.changeFirstTextByRequestId(message.request.request_id, message.request.id_project, message.text).then(function (reqChanged) {
-                            // requestService.changePreflightByRequestId(message.request.request_id, message.request.id_project, false).then(function (reqChanged) {
+                        //TESTA QUESTO
 
-
-                                // reroute(request_id, id_project, nobot)
-                                requestService.reroute(message.request.request_id, message.request.id_project, false );     
+                                winston.debug("message.request.status: "+message.request.status);
+                                
+                                winston.debug("message.request.hasBot: "+message.request.hasBot);
+                                // winston.info("message.request.department.id_bot: "+message.request.department.id_bot);
+                                if (message.request.status === 50 &&  message.request.hasBot === false) { 
+                                    // if (message.request.status === 50 &&  message.request.department.id_bot == undefined) { 
+                                    //apply only if the status is temp and no bot is available. with agent you must reroute to assign temp request to an agent 
+                                    winston.debug("rerouting");
+                                    // reroute(request_id, id_project, nobot)
+                                    
+                                    requestService.reroute(message.request.request_id, message.request.id_project, false ).then(function() {
+                                        winston.debug("reroute successful from event message.create");
+                                    }).catch((err) => {
+                                        winston.error("ConciergeBot error reroute: " + err);
+                                    });     
+                                }
+                                
                                 // updateStatusWitId(lead_id, id_project, status)
                                 // lead_id used. Change it?
                                 leadService.updateStatusWitId(message.request.lead.lead_id, message.request.id_project, LeadConstants.NORMAL);
@@ -125,7 +142,9 @@ devi mandare un messaggio welcome tu altrimenti il bot inserito successivamente 
                             
                             // botprefix
                             // removeParticipantByRequestId(request_id, id_project, member) 
-                            requestService.removeParticipantByRequestId(request.request_id, request.id_project,"bot_"+botId );
+                            requestService.removeParticipantByRequestId(request.request_id, request.id_project,"bot_"+botId ).catch((err) => {
+                                winston.error("(ConciergeBot) removeParticipantByRequestId error", err)
+                            });
                         }      
                     }
                     
@@ -178,7 +197,7 @@ devi mandare un messaggio welcome tu altrimenti il bot inserito successivamente 
 
             setImmediate(() => {
                                       
-                        winston.debug("ConciergeBot send close bot message");     
+                        winston.debug("ConciergeBot send close bot message",request);     
                                             
                         // send(sender, senderFullname, recipient, text, id_project, createdBy, attributes, type, metadata, language) 
                             messageService.send(
@@ -188,7 +207,7 @@ devi mandare un messaggio welcome tu altrimenti il bot inserito successivamente 
                                 "Chat closed", 
                                 request.id_project,
                                 'system', 
-                                {subtype:"info/support", "updateconversation" : false, messagelabel: {key: "CHAT_CLOSED"}},
+                                {subtype:"info/support", "updateconversation" : false, messagelabel: {key: "CHAT_CLOSED"}},   // TODO send request.closed_by <- c'è il campo l'ho verificato
                                 undefined,
                                 request.language
                             );
@@ -218,8 +237,8 @@ devi mandare un messaggio welcome tu altrimenti il bot inserito successivamente 
                                 request.request_id,
                                 "Chat reopened", 
                                 request.id_project,
-                                'system', 
-                                {subtype:"info/support", "updateconversation" : false, messagelabel: {key: "CHAT_REOPENED"}},
+                                'system',                                       //changed from false to true 6Aug22 because reopen from dashboard history doesn't update convs in ionic
+                                {subtype:"info/support", "updateconversation" : true, messagelabel: {key: "CHAT_REOPENED"}},
                                 undefined,
                                 request.language
 
@@ -242,58 +261,58 @@ devi mandare un messaggio welcome tu altrimenti il bot inserito successivamente 
 
 
     // unused
-    welcomeOnJoin(request) {
-        var botId = BotFromParticipant.getBotFromParticipants(request.participants);
-        if (!botId) {                        
-        // if (!request.department.id_bot) {
+    // welcomeOnJoin(request) {
+    //     var botId = BotFromParticipant.getBotFromParticipants(request.participants);
+    //     if (!botId) {                        
+    //     // if (!request.department.id_bot) {
             
-            winston.debug("ConciergeBot send welcome bot message");     
+    //         winston.debug("ConciergeBot send welcome bot message");     
           
-              // TODO if (request is assigned allora manda we are putting inn touch )
-            // controlla dopo reassing
-            if (request.status == RequestConstants.ASSIGNED) {
-                if (request.participants.length==0) {
-                    // if (request.availableAgents.length==0) {
+    //           // TODO if (request is assigned allora manda we are putting inn touch )
+    //         // controlla dopo reassing
+    //         if (request.status == RequestConstants.ASSIGNED) {
+    //             if (request.participants.length==0) {
+    //                 // if (request.availableAgents.length==0) {
                        
-                        // messageService.send(sender, senderFullname, recipient, text, id_project, createdBy, attributes, type);
-                        messageService.send(
-                            'system', 
-                            'Bot',                                     
-                            request.request_id,
-                            i8nUtil.getMessage("NO_AVAILABLE_OPERATOR_MESSAGE", request.language, MessageConstants.LABELS), 
-                            request.id_project,
-                            'system', 
-                            //{"updateconversation" : false, messagelabel: {key: "NO_AVAILABLE_OPERATOR_MESSAGE"}}
-                            {messagelabel: {key: "NO_AVAILABLE_OPERATOR_MESSAGE"}},
-                            undefined,
-                            request.language
+    //                     // messageService.send(sender, senderFullname, recipient, text, id_project, createdBy, attributes, type);
+    //                     messageService.send(
+    //                         'system', 
+    //                         'Bot',                                     
+    //                         request.request_id,
+    //                         i8nUtil.getMessage("NO_AVAILABLE_OPERATOR_MESSAGE", request.language, MessageConstants.LABELS), 
+    //                         request.id_project,
+    //                         'system', 
+    //                         //{"updateconversation" : false, messagelabel: {key: "NO_AVAILABLE_OPERATOR_MESSAGE"}}
+    //                         {messagelabel: {key: "NO_AVAILABLE_OPERATOR_MESSAGE"}},
+    //                         undefined,
+    //                         request.language
                            
 
-                        );
+    //                     );
                     
                         
-                    }else {
+    //                 }else {
         
-                        messageService.send(
-                            'system', 
-                            'Bot',                                     
-                            request.request_id,
-                            i8nUtil.getMessage("JOIN_OPERATOR_MESSAGE", request.language, MessageConstants.LABELS), 
-                            request.id_project,
-                            'system', 
-                            {messagelabel: {key: "JOIN_OPERATOR_MESSAGE"}},
-                            // {"updateconversation" : false, messagelabel: {key: "JOIN_OPERATOR_MESSAGE"}}
-                            undefined,
-                            request.language
+    //                     messageService.send(
+    //                         'system', 
+    //                         'Bot',                                     
+    //                         request.request_id,
+    //                         i8nUtil.getMessage("JOIN_OPERATOR_MESSAGE", request.language, MessageConstants.LABELS), 
+    //                         request.id_project,
+    //                         'system', 
+    //                         {messagelabel: {key: "JOIN_OPERATOR_MESSAGE"}},
+    //                         // {"updateconversation" : false, messagelabel: {key: "JOIN_OPERATOR_MESSAGE"}}
+    //                         undefined,
+    //                         request.language
 
-                        );
+    //                     );
         
                        
-                    }
-            }
+    //                 }
+    //         }
             
-        } 
-    }
+    //     } 
+    // }
 
 
 
@@ -328,6 +347,12 @@ devi mandare un messaggio welcome tu altrimenti il bot inserito successivamente 
                     if (request.subject) {
                         touchText = request.subject;
                     }
+
+                    
+                    // touchText.replace(String.fromCharCode(92),""); //Bugfix when a conversation has a first_text with \agent
+                    touchText = touchText.replace(/\\/g, "");
+
+                    winston.debug("touchText: " + touchText);
 
                         // messageService.send(sender, senderFullname, recipient, text, id_project, createdBy, attributes, type);
                         messageService.send(

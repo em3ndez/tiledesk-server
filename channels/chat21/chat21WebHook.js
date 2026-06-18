@@ -9,6 +9,8 @@ var Project_user = require("../../models/project_user");
 var RequestConstants = require("../../models/requestConstants");
 
 var cacheUtil = require('../../utils/cacheUtil');
+var cacheEnabler = require("../../services/cacheEnabler");
+
 
 var mongoose = require('mongoose');
 var winston = require('../../config/winston');
@@ -17,11 +19,23 @@ var ProjectUserUtil = require("../../utils/project_userUtil");
 var RequestUtil = require("../../utils/requestUtil");
 const authEvent = require('../../event/authEvent');
 
+var syncJoinAndLeaveGroupEvent =  false;
+if (process.env.SYNC_JOIN_LEAVE_GROUP_EVENT === true || process.env.SYNC_JOIN_LEAVE_GROUP_EVENT ==="true") {
+  syncJoinAndLeaveGroupEvent = true;
+}
+winston.info("Chat21 Sync JoinAndLeave Support Group Event: " + syncJoinAndLeaveGroupEvent);
+
+var allowReopenChat =  false;   //It's work only with firebase chat engine
+if (process.env.ALLOW_REOPEN_CHAT === true || process.env.ALLOW_REOPEN_CHAT ==="true") {
+  allowReopenChat = true;
+}
+winston.info("Chat21 allow reopen chat: " + allowReopenChat);
+
 
 router.post('/', function (req, res) {
 
 
-   
+  winston.debug("req.body.event_type: " + req.body.event_type);
 
                                                     //Deprecated
   if (req.body.event_type == "message-sent" || req.body.event_type == "new-message") {
@@ -38,7 +52,7 @@ router.post('/', function (req, res) {
 
     var message = req.body.data;
     
-
+    winston.debug("message text: " + message.text);
 
 
     // before request_id id_project unique commented
@@ -61,174 +75,194 @@ router.post('/', function (req, res) {
     winston.debug("Chat21 message", message);
 
         // requestcachefarequi nocachepopulatereqired        
-        return Request.findOne({request_id: message.recipient}) 
+        let q = Request.findOne({request_id: message.recipient}) 
+
+        if (cacheEnabler.request) {
+          q.cache(cacheUtil.defaultTTL, "requests:request_id:"+message.recipient+":simple"); //request_cache
+                                                                                            // project_id not available //without project for chat21 webhook
+          winston.debug('request cache enabled');
+        }
+        return q.exec(function(err, request) {
+
         // before request_id id_project unique - commented
-        // return Request.findOne({request_id: message.recipient, id_project: projectid})      
-          // .cache(cacheUtil.defaultTTL, req.projectid+":requests:request_id:"+requestid) project_id not available
-          .exec(function(err, request) {
+               
 
           if (err) {
             return res.status(500).send({success: false, msg: 'Error getting the request.', err:err});
           }
 
+          winston.debug('request cache simple 1', request);
+
           if (!request) { //the request doen't exists create it
 
-                winston.debug("request not exists with request_id: " + message.recipient);
-                
-                var departmentid = "default";
+            winston.debug("request not exists with request_id: " + message.recipient);
+
+            var departmentid = "default";
 
 
-                var language = message.language;
-                winston.debug("chat21 language", language);
-            
-                var sourcePage;
-                var client;
-                var userEmail;
-                var userFullname;
-                var projectid;  // before request_id id_project unique - commented
-            
-                var requestStatus = undefined;
+            var language = message.language;
+            winston.debug("chat21 language", language);
 
-                if (message.attributes) {
-            
-                  // before request_id id_project unique - commented
-                  projectid = message.attributes.projectId;
-                  winston.debug("chat21 projectid", projectid);
-            
-                  departmentid = message.attributes.departmentId;
-                  winston.debug("chat21 departmentid", departmentid);
-            
-                  sourcePage = message.attributes.sourcePage;
-                  winston.debug("chat21 sourcePage", sourcePage);
-                  
-                  client = message.attributes.client;
-                  winston.debug("chat21 client", client);
-              
-                
-            
-                  userEmail = message.attributes.userEmail;
-                  winston.debug("chat21 userEmail", userEmail);
-            
-                  userFullname = message.attributes.userFullname;
-                  winston.debug("chat21 userFullname", userFullname);
+            var sourcePage;
+            var client;
+            var userEmail;
+            var userFullname;
+            var projectid;  // before request_id id_project unique - commented
 
-                  // TODO proactive status
-                  // if (message.attributes.subtype === "info") {                    
-                  //   requestStatus = 50;
-                  // }
+            var requestStatus = undefined;
+
+            if (message.attributes) {
+
+              // before request_id id_project unique - commented
+              projectid = message.attributes.projectId;
+              winston.debug("chat21 projectid", projectid);
+
+              departmentid = message.attributes.departmentId;
+              winston.debug("chat21 departmentid", departmentid);
+
+              sourcePage = message.attributes.sourcePage;
+              winston.debug("chat21 sourcePage", sourcePage);
+
+              client = message.attributes.client;
+              winston.debug("chat21 client", client);
+
+
+
+              userEmail = message.attributes.userEmail;
+              winston.debug("chat21 userEmail", userEmail);
+
+              userFullname = message.attributes.userFullname;
+              winston.debug("chat21 userFullname", userFullname);
+
+              // TODO proactive status
+              // if (message.attributes.subtype === "info") {                    
+              //   requestStatus = 50;
+              // }
+            }
+
+            winston.debug("requestStatus " + requestStatus);
+
+            // before request_id id_project unique - commented
+            if (!projectid) {
+              winston.verbose("projectid is null. Not a support message");
+              return res.status(400).send({ success: false, msg: 'projectid is null. Not a support message' });
+            }
+
+
+            if (!message.recipient.startsWith("support-group")) {
+              winston.verbose("recipient not starts wiht support-group. Not a support message");
+              return res.status(400).send({ success: false, msg: "recipient not starts wiht support-group. Not a support message" });
+            }
+
+
+            if (!userFullname) {
+              userFullname = message.sender_fullname;
+            }
+
+
+
+
+            var leadAttributes = message.attributes;
+            leadAttributes["senderAuthInfo"] = message.senderAuthInfo;
+
+            // winston.debug("userEmail is defined");
+            // createIfNotExistsWithLeadId(lead_id, fullname, email, id_project, createdBy)
+            return leadService.createIfNotExistsWithLeadId(message.sender, userFullname, userEmail, projectid, null, leadAttributes)
+              .then(function (createdLead) {
+
+                var rAttributes = message.attributes;
+                rAttributes["senderAuthInfo"] = message.senderAuthInfo;
+                winston.debug("rAttributes", rAttributes);
+
+
+
+
+                // message.sender is the project_user id created with firebase custom auth
+
+                var isObjectId = mongoose.Types.ObjectId.isValid(message.sender);
+                winston.debug("isObjectId:" + isObjectId);
+
+                var queryProjectUser = { id_project: projectid, status: "active" };
+
+                if (isObjectId) {
+                  queryProjectUser.id_user = message.sender;
+                } else {
+                  queryProjectUser.uuid_user = message.sender;
                 }
-                
-                winston.debug("requestStatus "+ requestStatus);
-                
-                 // before request_id id_project unique - commented
-                if (!projectid) {
-                  winston.verbose("projectid is null. Not a support message");
-                  return res.status(400).send({success: false, msg: 'projectid is null. Not a support message'});
-                }
-
-                
-                if (!message.recipient.startsWith("support-group")) {
-                  winston.verbose("recipient not starts wiht support-group. Not a support message");
-                  return res.status(400).send({success: false, msg: "recipient not starts wiht support-group. Not a support message"});
-                }
-            
-              
-                if (!userFullname) {
-                  userFullname = message.sender_fullname;
-                }
-
-              
-               
-
-                var leadAttributes = message.attributes;
-                leadAttributes["senderAuthInfo"] = message.senderAuthInfo;
-              
-                  // winston.debug("userEmail is defined");
-                                    // createIfNotExistsWithLeadId(lead_id, fullname, email, id_project, createdBy)
-                  return leadService.createIfNotExistsWithLeadId(message.sender, userFullname, userEmail, projectid, null, leadAttributes)
-                  .then(function(createdLead) {
-
-                    var rAttributes = message.attributes;
-                    rAttributes["senderAuthInfo"] = message.senderAuthInfo;   
-                    winston.debug("rAttributes", rAttributes);
+                winston.debug("queryProjectUser", queryProjectUser);
 
 
+                return Project_user.findOne(queryProjectUser)
+                  // .cache(cacheUtil.defaultTTL, projectid+":project_users:request_id:"+requestid)
+                  .exec(function (err, project_user) {
+
+                    var project_user_id = null;
+
+                    if (err) {
+                      winston.error("Error getting the project_user_id", err);
+                    }
+
+                    if (project_user) {
+                      winston.debug("project_user", project_user);
+                      project_user_id = project_user.id;
+                      winston.debug("project_user_id: " + project_user_id);
+                    } else {
+                      // error->utente bloccato oppure non autenticator request.requester sarà nulll...⁄
+                      return winston.error("project_user not found with query: ", queryProjectUser);
+                    }
 
 
-                      // message.sender is the project_user id created with firebase custom auth
+                    // var auto_close;
 
-                      var isObjectId = mongoose.Types.ObjectId.isValid(message.sender);
-                      winston.debug("isObjectId:"+ isObjectId);
+                    // // qui projecy nn c'è devi leggerlo
+                    // // if (req.project.attributes.auto_close === false) {
+                    // //   auto_close = 10;
+                    // // }
 
-                       var queryProjectUser = {id_project:projectid, status: "active" };
 
-                      if (isObjectId) {
-                        queryProjectUser.id_user = message.sender;
-                      }else {
-                        queryProjectUser.uuid_user = message.sender;
-                      }
-                      winston.debug("queryProjectUser", queryProjectUser);
-                      
+                    var new_request = {
+                      request_id: message.recipient, project_user_id: project_user_id, lead_id: createdLead._id, id_project: projectid, first_text: message.text,
+                      departmentid: departmentid, sourcePage: sourcePage, language: language, userAgent: client, status: requestStatus, createdBy: undefined,
+                      attributes: rAttributes, subject: undefined, preflight: false, channel: undefined, location: undefined,
+                      lead: createdLead, requester: project_user
+                      // , auto_close: auto_close
+                    };
 
-                    return Project_user.findOne(queryProjectUser)
-                    // .cache(cacheUtil.defaultTTL, projectid+":project_users:request_id:"+requestid)
-                    .exec(function (err, project_user) {
+                    winston.debug("new_request", new_request);
 
-                      var project_user_id = null; 
+                    return requestService.create(new_request).then(function (savedRequest) {
 
-                      if (err) {
-                        winston.error("Error getting the project_user_id", err);
-                      }
 
-                      if (project_user) {
-                        winston.debug("project_user", project_user);
-                        project_user_id = project_user.id;
-                        winston.debug("project_user_id: " + project_user_id);
-                      }else {
-                        // error->utente bloccato oppure non autenticator request.requester sarà nulll...⁄
-                        return winston.error("project_user not found with query: ", queryProjectUser);                        
-                      }
-
-                      
-                      var new_request = {
-                        request_id: message.recipient, project_user_id:project_user_id, lead_id:createdLead._id, id_project:projectid, first_text:message.text,
-                        departmentid:departmentid, sourcePage:sourcePage, language:language, userAgent:client, status:requestStatus, createdBy: undefined,
-                        attributes:rAttributes, subject:undefined, preflight:false, channel:undefined, location:undefined,
-                        lead:createdLead, requester:project_user
-                      };
-    
-                      winston.debug("new_request", new_request);
-                      
-                      return requestService.create(new_request).then(function (savedRequest) {
-
-                    
                       //return requestService.createWithIdAndRequester(message.recipient, project_user_id, createdLead._id, projectid, message.text, 
                       // departmentid, sourcePage, language, client, requestStatus, null, rAttributes).then(function (savedRequest) {
-                 
 
-                        var messageId = undefined;
-                        if (message.attributes && message.attributes.tiledesk_message_id) {
-                          messageId = message.attributes.tiledesk_message_id;
-                        }
 
-                       // upsert(id, sender, senderFullname, recipient, text, id_project, createdBy, status, attributes, type, metadata, language)
-                        return messageService.upsert(messageId, message.sender, message.sender_fullname, message.recipient, message.text,
-                          projectid, null, MessageConstants.CHAT_MESSAGE_STATUS.RECEIVED, message.attributes, message.type, message.metadata, language).then(function(savedMessage){
-                                                                
-                            return requestService.incrementMessagesCountByRequestId(savedRequest.request_id, savedRequest.id_project).then(function(savedRequestWithIncrement) {
-                              return res.json(savedRequestWithIncrement);
-                            });
-                          
-                        
-                      }).catch(function (err) {
-                        winston.error( 'Error creating the request object.', err);
-                        return res.status(500).send({success: false, msg: 'Error creating the request object.', err:err});
-                      });
+                      var messageId = undefined;
+                      if (message.attributes && message.attributes.tiledesk_message_id) {
+                        messageId = message.attributes.tiledesk_message_id;
+                      }
+
+                      // upsert(id, sender, senderFullname, recipient, text, id_project, createdBy, status, attributes, type, metadata, language)
+                      return messageService.upsert(messageId, message.sender, message.sender_fullname, message.recipient, message.text,
+                        projectid, null, MessageConstants.CHAT_MESSAGE_STATUS.RECEIVED, message.attributes, message.type, message.metadata, language).then(function (savedMessage) {
+                          return res.json(savedRequest);
+                          // return requestService.incrementMessagesCountByRequestId(savedRequest.request_id, savedRequest.id_project).then(function(savedRequestWithIncrement) {
+                          // return res.json(savedRequestWithIncrement);
+                          // });
+
+
+                        }).catch(function (err) {
+                          winston.error('Error creating the request object.', err);
+                          return res.status(500).send({ success: false, msg: 'Error creating the request object.', err: err });
+                        });
+                    }).catch((err) => {
+                      winston.error('(Chat21Webhook) Error creating the request object ', err);
+                      return res.status(500).send({ success: false, msg: 'Error creating the request object.', err: err });
+                    });
                   });
-                });
-                  
+
               });
-              
+
 
 
           } else {
@@ -273,24 +307,31 @@ router.post('/', function (req, res) {
                 // TODO se stato = 50 e scrive visitatotre sposto a stato 100 poi queuue lo smista
 
                 // TOOD update also request attributes and sourcePage
-                
-                    return requestService.incrementMessagesCountByRequestId(request.request_id, request.id_project).then(function(savedRequest) {
+                if (message.sender !== 'system') {
+                  Request.findOneAndUpdate({request_id: request.request_id, id_project: request.id_project}, { "attributes.last_message": savedMessage}).catch((err) => {
+                    winston.error("Create message - saving last message in request error: ", err);
+                  })
+                }
+
+                    // return requestService.incrementMessagesCountByRequestId(request.request_id, request.id_project).then(function(savedRequest) {
                       // winston.debug("savedRequest.participants.indexOf(message.sender)", savedRequest.participants.indexOf(message.sender));
-                       
+                      winston.debug("before updateWaitingTimeByRequestId*******",request.participants, message.sender);
+                      winston.debug("updateWaitingTimeByRequestId******* message: "+ message.sender);
                       // TODO it doesn't work for internal requests bacause participanets == message.sender⁄
-                      if (savedRequest.participants && savedRequest.participants.indexOf(message.sender) > -1) { //update waiitng time if write an  agent (member of participants)
-                        winston.debug("updateWaitingTimeByRequestId");
-                        return requestService.updateWaitingTimeByRequestId(request.request_id, request.id_project).then(function(upRequest) {
+                      if (request.participants && request.participants.indexOf(message.sender) > -1) { //update waiitng time if write an  agent (member of participants)
+                        winston.debug("updateWaitingTimeByRequestId*******");
+                                                                                                                  //leave this parameter to true because it is used by websocket to notify request.update                                 
+                        return requestService.updateWaitingTimeByRequestId(request.request_id, request.id_project, true).then(function(upRequest) {
                           return res.json(upRequest);
                         });
                       }else {
-                        return res.json(savedRequest);
+                        return res.json(savedMessage);
                       }
-                    });
-                  }).catch(function(err){
-                    winston.error("Error creating message", {err: err, message: message});
-                    return res.status(500).send({success: false, msg: 'Error creating message', err:err });
-                  });
+                    // });
+              }).catch(function(err){ 
+                winston.error("Error creating chat21 webhook message: "+ JSON.stringify({err: err, message: message}));
+                return res.status(500).send({success: false, msg: 'Error creating message', err:err });
+              });
 
 
 
@@ -344,16 +385,16 @@ router.post('/', function (req, res) {
               var projectId = RequestUtil.getProjectIdFromRequestId(recipient_id);
 
               var isObjectId = mongoose.Types.ObjectId.isValid(projectId);
-              winston.verbose("isObjectId:"+ isObjectId);
+              winston.debug("isObjectId:"+ isObjectId);
 
-              winston.verbose("attributes",conversation.attributes);
+              winston.debug("attributes",conversation.attributes);
 
               if (!projectId || !isObjectId) { //back compatibility when projectId were always presents in the attributes (firebase)                
                 projectId = conversation.attributes.projectId;
                 winston.verbose('getting projectId from attributes (back compatibility): '+ projectId);
               }
                 
-              winston.verbose('projectId: '+ projectId);
+              winston.debug('projectId: '+ projectId);
 
               if (!projectId) {
                 return res.status(500).send({success: false, msg: "Error projectid is not presents in attributes " });
@@ -362,9 +403,13 @@ router.post('/', function (req, res) {
               var query = {request_id: recipient_id, id_project: projectId};
               winston.debug('query:'+ projectId);
               
-              return Request.findOne(query)
-              .cache(cacheUtil.defaultTTL, projectId+":requests:request_id:"+recipient_id)
-              .exec(function(err, request) {
+              winston.debug('conversation-archived Request.findOne(query);:');
+              let q = Request.findOne(query);
+              // if (cacheEnabler.request) {
+              //   q.cache(cacheUtil.defaultTTL, projectId+":requests:request_id:"+recipient_id+":simple"); //request_cache NOT IMPORTANT HERE
+              //   winston.debug('project cache enabled');
+              // }
+              return q.exec(function(err, request) {
 
                 if (err) {
                   winston.error("Error finding request with query ", query);
@@ -386,7 +431,9 @@ router.post('/', function (req, res) {
                       // winston.debug('updatedParticipantsRequest', updatedParticipantsRequest);
                       // manca id
 
-                      return requestService.closeRequestByRequestId(recipient_id, projectId).then(function(updatedStatusRequest) {
+                      // closeRequestByRequestId(request_id, id_project, skipStatsUpdate, notify, closed_by)
+                      const closed_by = user_id;
+                      return requestService.closeRequestByRequestId(recipient_id, projectId, false, true,closed_by ).then(function(updatedStatusRequest) {
                         
                         winston.debug('updatedStatusRequest', updatedStatusRequest.toObject());
                         return res.json(updatedStatusRequest);                      
@@ -410,6 +457,11 @@ router.post('/', function (req, res) {
       winston.debug("event_type","join-member");
 
       winston.debug("req.body", JSON.stringify(req.body));
+
+      if (!syncJoinAndLeaveGroupEvent)  {
+        winston.debug("syncJoinAndLeaveGroupEvent is disabled");
+        return res.status(200).send({success: true, msg: "syncJoinAndLeaveGroupEvent is disabled" });
+      }
 
       var data = req.body.data;
       //winston.debug("data",data);
@@ -438,8 +490,9 @@ router.post('/', function (req, res) {
       winston.debug("id_project: " + id_project);
       
       // requestcachefarequi populaterequired
+      winston.debug('join-member Request.findOne(query);:');
       return Request.findOne({request_id: request_id, id_project: id_project})
-          .populate('lead') //TODO posso prenderlo da snapshot senza populate
+          .populate('lead') //TODO posso prenderlo da snapshot senza populate cache_attention
           .exec(function(err, request) {
         if (err){
           winston.error(err);
@@ -452,6 +505,10 @@ router.post('/', function (req, res) {
 
           winston.debug("request",request.toObject());
                    // lead_id used. Change it?
+
+          // winston.info("request.snapshot.lead",request.snapshot.lead);
+          // if (request.snapshot.lead && request.snapshot.lead.lead_id==new_member) {   
+
           if (request.lead && request.lead.lead_id==new_member) {            
             winston.debug("don't  joining request.lead or a lead");
             return res.status(400).send({success: false, msg: "don't  joining request.lead or a lead" });
@@ -475,6 +532,12 @@ router.post('/', function (req, res) {
     winston.debug("event_type","leave-member");
     
     winston.debug("req.body", JSON.stringify(req.body));
+
+    if (!syncJoinAndLeaveGroupEvent)  {
+      winston.debug("syncJoinAndLeaveGroupEvent is disabled");
+      return res.status(200).send({success: true, msg: "syncJoinAndLeaveGroupEvent is disabled" });
+    }
+
 
 
     var data = req.body.data;
@@ -509,14 +572,19 @@ router.post('/', function (req, res) {
     });
   }
   
-  else if (req.body.event_type == "deleted-archivedconversation") {
+  else if (req.body.event_type == "deleted-archivedconversation" || req.body.event_type == "conversation-unarchived") {
 
     winston.debug("event_type","deleted-archivedconversation");
 
     winston.debug("req.body",req.body);
 
+    if (!allowReopenChat)  {
+      winston.debug("allowReopenChat is disabled");
+      return res.status(200).send({success: true, msg: "allowReopenChat is disabled" });
+    }
 
-      var conversation = req.body.data;
+
+      var conversation = req.body.data; 
       // winston.debug("conversation",conversation);
 
       var user_id = req.body.user_id;
@@ -533,16 +601,24 @@ router.post('/', function (req, res) {
         return res.status(400).send({success: false, msg: "not a support conversation" });
       }
 
+
+
       if (user_id!="system"){
         winston.debug("not a system conversation");
         return res.status(400).send({success: false, msg: "not a system conversation" });
       }
 
 
+
+     // scrivo... nuova viene popolato projectid in attributes poi chiudo ed in archived c'è projectid 
+      // quando scrivo viene cancellato archived e nuovo messaggio crea conv ma senza project id... lineare che è cosi
+      // si verifica solo se admin (da ionic ) archivia di nuovo senza che widget abbia scritto nulla (widget risetta projectid in properties)
+
       var id_project;
       if (conversation && conversation.attributes) {
         id_project = conversation.attributes.projectId;
       }else {
+        winston.debug( "not a support deleting archived conversation" );
         return res.status(400).send({success: false, msg: "not a support deleting archived conversation" });
       }
       winston.debug("id_project", id_project);
@@ -559,7 +635,7 @@ router.post('/', function (req, res) {
 }
 else if (req.body.event_type == "typing-start") {
 
-  winston.debug("event_type","typing-start");
+  winston.debug("event_type typing-start");
 
   winston.debug("typing-start req.body",req.body);
 
@@ -585,9 +661,10 @@ else if (req.body.event_type == "typing-start") {
 
   
   // requestcachefarequi nocachepopulatereqired
+  winston.debug('typing-start Request.findOne(query);:');
   return Request.findOne({request_id: recipient_id})
                              //TOD  errore cache sistemare e riabbilitare->
-  // .cache(cacheUtil.defaultTTL, req.projectid+":requests:request_id:"+recipient_id)
+  // .cache(cacheUtil.defaultTTL, req.projectid+":requests:request_id:"+recipient_id)   cache_attention
   .exec(function(err, request) {
   if (err){
     winston.error(err);
@@ -694,6 +771,7 @@ else if (req.body.event_type == "presence-change") {
 
       project_user.presence = update
 
+      
       project_user.save(function (err, savedProjectUser) {
         if (err) {
          winston.error('Error saving project_user ', err)
@@ -725,7 +803,7 @@ else if (req.body.event_type == "presence-change") {
           
                     // urgente Cannot read property '_id' of null at /usr/src/app/channels/chat21/chat21WebHook.js:663:68 a
                     if (!updatedProject_userPopulated.id_project) {
-                      winston.warn('Error updatedProject_userPopulated.id_project not found.',{updatedProject_userPopulated:updatedProject_userPopulated, savedProjectUser:savedProjectUser,project_user:project_user});
+                      winston.debug('Error updatedProject_userPopulated.id_project not found.',{updatedProject_userPopulated:updatedProject_userPopulated, savedProjectUser:savedProjectUser,project_user:project_user});
                       // return res.status(404).send({ success: false, msg: 'Error updatedProject_userPopulated.id_project not found.' });
                       // continue;
                     } else {
@@ -784,7 +862,7 @@ else if (req.body.event_type == "new-group") {
   res.json("new-group event_type is not implemented");
 }
 else {
-  winston.error("Chat21WebHook error event_type not implemented", req.body);
+  winston.debug("Chat21WebHook error event_type not implemented", req.body);
   res.json("Not implemented");
 }
 

@@ -20,7 +20,7 @@ var MessageSchema = new Schema({
   senderFullname: {
     type: String,
     required: false,
-    default: "Guest"
+    default: "Guest" // guest_here
   },
   recipient: {
     type: String,
@@ -45,13 +45,13 @@ var MessageSchema = new Schema({
   },
   text: {
     type: String,
-    required: function() {
-      if (this.type === "text") {
-        return true;
-      }else {
-        return false;
-      }
-    }
+    // required: function() {
+    //   if (this.type === "text") {
+    //     return true;
+    //   }else {
+    //     return false;
+    //   }
+    // }
   },
   language: { //ISO 639-1 (Two letter codes) https://docs.mongodb.com/manual/reference/text-search-languages/#text-search-languages
     type: String,
@@ -97,6 +97,8 @@ MessageSchema.index({ recipient: 1, updatedAt:1 });
 MessageSchema.index({ id_project: 1, recipient:1, updatedAt: 1 });
 MessageSchema.index({ id_project: 1, "attributes._answerid": 1 });
 
+
+
 // https://docs.mongodb.com/manual/core/index-text/
 // https://docs.mongodb.com/manual/tutorial/specify-language-for-text-index/
 // https://docs.mongodb.com/manual/reference/text-search-languages/#text-search-languages
@@ -109,7 +111,7 @@ var message = mongoose.model('message', MessageSchema);
 
 if (process.env.MONGOOSE_SYNCINDEX) {
   message.syncIndexes();
-  winston.info("message syncIndexes")
+  winston.verbose("message syncIndexes")
 }
 
 module.exports = message;

@@ -1,0 +1,68 @@
+var express = require('express');
+var router = express.Router();
+const { QuoteManager } = require('../services/QuoteManager');
+let winston = require('../config/winston');
+const { MODELS_MULTIPLIER } = require('../utils/aiUtils');
+
+
+router.post('/', async (req, res) => {
+
+    let date = req.body.date;
+
+    let obj = { createdAt: new Date() };
+    if (date) {
+        obj.createdAt = new Date(date)
+    }
+
+    let quoteManager = req.app.get('quote_manager');
+
+    // check if project is not null/undefined
+    let quotes = await quoteManager.getAllQuotes(req.project, obj);
+    let currentSlot = await quoteManager.getCurrentSlot(req.project);
+
+    winston.debug("quotes: ", quotes);
+    res.status(200).send({ success: true, quotes: quotes, slot: currentSlot });
+})
+
+router.get('/:type', async (req, res) => {
+
+    let type = req.params.type;
+    let obj = { createdAt: new Date() };
+
+    let quoteManager = req.app.get('quote_manager');
+    let isAvailable = await quoteManager.checkQuote(req.project, obj, type);
+
+    winston.debug("is " + type + " available: ", isAvailable);
+    res.status(200).send({ isAvailable: isAvailable })
+
+})
+
+router.post('/incr/:type', async (req, res) => {
+
+    let type = req.params.type;
+    let data = req.body;
+
+    let quoteManager = req.app.get('quote_manager');
+
+    let modelKey;
+    if (typeof data.model === 'string') {
+        modelKey = data.model;
+    } else if (data.model && typeof data.model.name === 'string') {
+        modelKey = data.model.name;
+    }
+
+    let multiplier = MODELS_MULTIPLIER[modelKey];
+    if (!multiplier) {
+        multiplier = 1;
+        winston.info("No multiplier found for AI model (incr) " + modelKey)
+    }
+    data.multiplier = multiplier;
+    data.createdAt = new Date();
+
+    let incremented_key = await quoteManager.incrementTokenCount(req.project, data);
+    let quote = await quoteManager.getCurrentQuote(req.project, data, type);    
+
+    res.status(200).send({ message: "value incremented for key " + incremented_key, key: incremented_key, currentQuote: quote });
+})
+
+module.exports = router;

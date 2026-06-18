@@ -15,6 +15,9 @@ const sharp = require('sharp');
 
 
 const FileGridFsService = require('../services/fileGridFsService.js');
+const faq_kb = require('../models/faq_kb');
+const project_user = require('../models/project_user');
+const roleConstants = require('../models/roleConstants');
 
 const fileService = new FileGridFsService("images");
 
@@ -23,12 +26,26 @@ const fileService = new FileGridFsService("images");
 
 
 const fileFilter = (req, file, cb) => {
-  if (file.mimetype == 'image/jpeg' || file.mimetype == 'image/png') {
+  if (file.mimetype == 'image/jpeg' || file.mimetype == 'image/png' 
+      || file.mimetype == 'image/gif'|| file.mimetype == 'image/vnd.microsoft.icon'
+      || file.mimetype == 'image/webp') {
       cb(null, true);
   } else {
       cb(null, false);
   }
 }
+
+
+let MAX_UPLOAD_FILE_SIZE = process.env.MAX_UPLOAD_FILE_SIZE;
+let uploadlimits = undefined;
+
+if (MAX_UPLOAD_FILE_SIZE) {
+  uploadlimits = {fileSize: parseInt(MAX_UPLOAD_FILE_SIZE)} ;
+  winston.debug("Max upload file size is : " + MAX_UPLOAD_FILE_SIZE);
+} else {
+  winston.debug("Max upload file size is infinity");
+}
+
 
 // const bodymiddleware = function(req, res, next) {
 //   winston.info("YYYYYY req.body.folder:"+req.body.folder);
@@ -37,7 +54,7 @@ const fileFilter = (req, file, cb) => {
 // }
 
 
-const upload = multer({ storage: fileService.getStorage("images"), fileFilter: fileFilter });
+const upload = multer({ storage: fileService.getStorage("images"), fileFilter: fileFilter, limits: uploadlimits });
 
 /*
 curl -u andrea.leo@f21.it:123456 \
@@ -51,47 +68,48 @@ curl -u andrea.leo@f21.it:123456 \
 
   */
 
-router.post('/users', [passport.authenticate(['basic', 'jwt'], { session: false }), validtoken],
-// bodymiddleware, 
-upload.single('file'), (req, res, next) => {
-  try {
-    // winston.info("req.query.folder1:"+req.body.folder);
+// DEPRECATED FROM VERSION 2.14.24
+// router.post('/users', [passport.authenticate(['basic', 'jwt'], { session: false }), validtoken],
+// // bodymiddleware, 
+// upload.single('file'), (req, res, next) => {
+//   try {
+//     // winston.info("req.query.folder1:"+req.body.folder);
 
-    var folder = req.folder || "error";
-    winston.debug("folder:"+folder);
+//     var folder = req.folder || "error";
+//     winston.debug("folder:"+folder);
 
-     var destinationFolder = 'uploads/users/' + req.user.id + "/images/" + folder +"/";
-     winston.debug("destinationFolder",destinationFolder);
+//      var destinationFolder = 'uploads/users/' + req.user.id + "/images/" + folder +"/";
+//      winston.debug("destinationFolder",destinationFolder);
 
-     var thumFilename = destinationFolder+'thumbnails_200_200-' + req.file.originalname;
-
-
-     fileService.getFileDataAsBuffer(req.file.filename).then(function(buffer) {
-
-      sharp(buffer).resize(200, 200).toBuffer((err, resizeImage, info) => {
-        //in prod nn genera thumb
-        if (err) { winston.error("Error generating thumbnail", err); }
-        fileService.createFile ( thumFilename, resizeImage, undefined, undefined);
-      });
-
-      return res.status(201).json({
-          message: 'Image uploded successfully',
-          filename: encodeURIComponent(req.file.filename),
-          thumbnail: encodeURIComponent(thumFilename)
-      });
-    });
-  } catch (error) {
-    winston.error('Error uploading user image.',error);
-    return res.status(500).send({success: false, msg: 'Error uploading user image.'});
-  }
-});
+//      var thumFilename = destinationFolder+'thumbnails_200_200-' + req.file.originalname;
 
 
+//      fileService.getFileDataAsBuffer(req.file.filename).then(function(buffer) {
 
+//       sharp(buffer).resize(200, 200).toBuffer((err, resizeImage, info) => {
+//         //in prod nn genera thumb
+//         if (err) { winston.error("Error generating thumbnail", err); }
+//         fileService.createFile ( thumFilename, resizeImage, undefined, undefined);
+//       });
+
+//       return res.status(201).json({
+//           message: 'Image uploded successfully',
+//           filename: encodeURIComponent(req.file.filename),
+//           thumbnail: encodeURIComponent(thumFilename)
+//       });
+//     });
+//   } catch (error) {
+//     winston.error('Error uploading user image.',error);
+//     return res.status(500).send({success: false, msg: 'Error uploading user image.'});
+//   }
+// });
 
 
 
-const uploadFixedFolder = multer({ storage: fileService.getStorageFixFolder("images"), fileFilter: fileFilter });
+
+
+
+const uploadFixedFolder = multer({ storage: fileService.getStorageFixFolder("images"), fileFilter: fileFilter, limits: uploadlimits });
 
 /*
 curl -v -X PUT -u andrea.leo@f21.it:123456 \
@@ -104,56 +122,58 @@ curl -v -X PUT -u andrea.leo@f21.it:123456 \
     https://tiledesk-server-pre.herokuapp.com/images/users/
 
   */
-router.put('/users', [passport.authenticate(['basic', 'jwt'], { session: false }), validtoken],
-// bodymiddleware, 
-uploadFixedFolder.single('file'), (req, res, next) => {
-  try {
-    winston.debug("/users/folder");
-    // winston.info("req.query.folder1:"+req.body.folder);
 
-    // var folder = req.folder || "error";
-    // winston.info("folder:"+folder);
+// DEPRECATED FROM VERSION 2.14.24
+// router.put('/users', [passport.authenticate(['basic', 'jwt'], { session: false }), validtoken],
+// // bodymiddleware, 
+// uploadFixedFolder.single('file'), (req, res, next) => {
+//   try {
+//     winston.debug("/users/folder");
+//     // winston.info("req.query.folder1:"+req.body.folder);
 
-    if (req.upload_file_already_exists) {
-      winston.warn('Error uploading photo image, file already exists',req.file.filename );
-      return res.status(409).send({success: false, msg: 'Error uploading user image, file already exists'});
-    }
+//     // var folder = req.folder || "error";
+//     // winston.info("folder:"+folder);
 
-     var destinationFolder = 'uploads/users/' + req.user.id + "/images/";
-     winston.debug("destinationFolder",destinationFolder);
+//     if (req.upload_file_already_exists) {
+//       winston.warn('Error uploading photo image, file already exists',req.file.filename );
+//       return res.status(409).send({success: false, msg: 'Error uploading user image, file already exists'});
+//     }
 
-     var thumFilename = destinationFolder+'thumbnails_200_200-' + req.file.originalname;
+//      var destinationFolder = 'uploads/users/' + req.user.id + "/images/";
+//      winston.debug("destinationFolder",destinationFolder);
 
-
-     fileService.getFileDataAsBuffer(req.file.filename).then(function(buffer) {
-
-      sharp(buffer).resize(200, 200).toBuffer((err, resizeImage, info) => {
-        //in prod nn genera thumb
-        if (err) { winston.error("Error generating thumbnail", err); }
-        fileService.createFile ( thumFilename, resizeImage, undefined, undefined);
-      });
-
-      return res.status(201).json({
-          message: 'Image uploded successfully',
-          filename: encodeURIComponent(req.file.filename),
-          thumbnail: encodeURIComponent(thumFilename)
-      });
-    });
-  } catch (error) {
-    winston.error('Error uploading user image.',error);
-    return res.status(500).send({success: false, msg: 'Error uploading user image.'});
-  }
-});
+//      var thumFilename = destinationFolder+'thumbnails_200_200-' + req.file.originalname;
 
 
+//      fileService.getFileDataAsBuffer(req.file.filename).then(function(buffer) {
 
+//       sharp(buffer).resize(200, 200).toBuffer((err, resizeImage, info) => {
+//         //in prod nn genera thumb
+//         if (err) { winston.error("Error generating thumbnail", err); }
+//         fileService.createFile ( thumFilename, resizeImage, undefined, undefined);
+//       });
 
+//       return res.status(201).json({
+//           message: 'Image uploded successfully',
+//           filename: encodeURIComponent(req.file.filename),
+//           thumbnail: encodeURIComponent(thumFilename)
+//       });
+//     });
+//   } catch (error) {
+//     winston.error('Error uploading user image.',error);
+//     return res.status(500).send({success: false, msg: 'Error uploading user image.'});
+//   }
+// });
 
 
 
 
 
-const uploadAvatar= multer({ storage: fileService.getStorageAvatar("images"), fileFilter: fileFilter });
+
+
+
+
+const uploadAvatar= multer({ storage: fileService.getStorageAvatar("images"), fileFilter: fileFilter, limits: uploadlimits });
 
 /*
 curl -v -X PUT -u andrea.leo@f21.it:123456 \
@@ -169,53 +189,82 @@ curl -v -X PUT -u andrea.leo@f21.it:123456 \
     https://tiledesk-server-pre.herokuapp.com/images/users/photo
 
   */
-router.put('/users/photo', [passport.authenticate(['basic', 'jwt'], { session: false }), validtoken],
-// bodymiddleware, 
-uploadAvatar.single('file'), (req, res, next) => {
-  try {
-    winston.debug("/users/photo");
-    // winston.info("req.query.folder1:"+req.body.folder);
+// DEPRECATED FROM VERSION 2.14.24
+// router.put('/users/photo', [passport.authenticate(['basic', 'jwt'], { session: false }), validtoken],
+// // bodymiddleware, 
+// uploadAvatar.single('file'), async (req, res, next) => {
+//   try {
+//     winston.debug("/users/photo");
 
-    // var folder = req.folder || "error";
-    // winston.info("folder:"+folder);
+//     if (req.upload_file_already_exists) {
+//       winston.warn('Error uploading photo image, file already exists',req.file.filename );
+//       return res.status(409).send({success: false, msg: 'Error uploading photo image, file already exists'});
+//     }
 
-    if (req.upload_file_already_exists) {
-      winston.warn('Error uploading photo image, file already exists',req.file.filename );
-      return res.status(409).send({success: false, msg: 'Error uploading photo image, file already exists'});
-    }
+//     let userid = req.user.id;
+//     let bot_id;
+//     let entity_id = userid;
 
-    var userid = req.user.id;
-
-    if (req.query.user_id) {
-      userid = req.query.user_id;
-    }
+//     // if (req.query.user_id) {
+//     //   userid = req.query.user_id;
+//     // }
     
+//     if (req.query.bot_id) {
+//       bot_id = req.query.bot_id;
 
-     var destinationFolder = 'uploads/users/' + userid + "/images/";
-     winston.info("destinationFolder:"+destinationFolder);
+//       let chatbot = await faq_kb.findById(bot_id).catch((err) => {
+//         winston.error("Error finding bot ", err);
+//         return res.status(500).send({ success: false, error: "Unable to find chatbot with id " + bot_id });
+//       })
 
-     var thumFilename = destinationFolder+'thumbnails_200_200-photo.jpg';
+//       if (!chatbot) {
+//         return res.status(404).send({ success: false, error: "Chatbot not found" })
+//       }
 
-     winston.info("req.file.filename:"+req.file.filename);
-     fileService.getFileDataAsBuffer(req.file.filename).then(function(buffer) {
+//       let id_project = chatbot.id_project;
 
-      sharp(buffer).resize(200, 200).toBuffer((err, resizeImage, info) => {
-        //in prod nn genera thumb
-        if (err) { winston.error("Error generating thumbnail", err); }
-        fileService.createFile ( thumFilename, resizeImage, undefined, undefined);
-      });
+//       let puser = await project_user.findOne({ id_user: userid, id_project: id_project }).catch((err) => {
+//         winston.error("Error finding project user: ", err);
+//         return res.status(500).send({ success: false, error: "Unable to find project user for user " + userid + "in project " + id_project });
+//       })
+//       if (!puser) {
+//         winston.warn("User" + userid + "don't belongs the project " + id_project);
+//         return res.status(401).send({ success: false, error: "You don't belong the chatbot's project" })
+//       }
 
-      return res.status(201).json({
-          message: 'Image uploded successfully',
-          filename: encodeURIComponent(req.file.filename),
-          thumbnail: encodeURIComponent(thumFilename)
-      }); 
-    });
-  } catch (error) {
-    winston.error('Error uploading user image.',error);
-    return res.status(500).send({success: false, msg: 'Error uploading user image.'});
-  }
-});
+//       if ((puser.role !== roleConstants.ADMIN) && (puser.role !== roleConstants.OWNER)) {
+//         winston.warn("User with role " + puser.role + "can't modify the chatbot");
+//         return res.status(403).send({ success: false, error: "You don't have the role required to modify the chatbot" });
+//       }
+
+//       entity_id = bot_id;
+//     }
+
+//      var destinationFolder = 'uploads/users/' + entity_id + "/images/";
+//      winston.debug("destinationFolder:"+destinationFolder);
+
+//      var thumFilename = destinationFolder+'thumbnails_200_200-photo.jpg';
+
+//      winston.debug("req.file.filename:"+req.file.filename);
+//      fileService.getFileDataAsBuffer(req.file.filename).then(function(buffer) {
+
+//       sharp(buffer).resize(200, 200).toBuffer((err, resizeImage, info) => {
+//         //in prod nn genera thumb
+//         if (err) { winston.error("Error generating thumbnail", err); }
+//         fileService.createFile ( thumFilename, resizeImage, undefined, undefined);
+//       });
+
+//       return res.status(201).json({
+//           message: 'Image uploded successfully',
+//           filename: encodeURIComponent(req.file.filename),
+//           thumbnail: encodeURIComponent(thumFilename)
+//       }); 
+//     });
+//   } catch (error) {
+//     winston.error('Error uploading user image.',error);
+//     return res.status(500).send({success: false, msg: 'Error uploading user image.'});
+//   }
+// });
 
 
 
@@ -231,57 +280,57 @@ curl -v -X DELETE  -u andrea.leo@frontiere21.it:123 \
  
 */
 
-router.delete('/users', [passport.authenticate(['basic', 'jwt'], { session: false }), validtoken], (req, res, next) => {
-  try {
-    winston.debug("delete /users");
+// router.delete('/users', [passport.authenticate(['basic', 'jwt'], { session: false }), validtoken], (req, res, next) => {
+//   try {
+//     winston.debug("delete /users");
 
-    let path = req.query.path;
-    winston.debug("path:"+path);
+//     let path = req.query.path;
+//     winston.debug("path:"+path);
 
-    // TODO later if enabled there is problem when admin delete a bot image
-    // if (path.indexOf("/"+req.user.id+"/")==-1) {
-    //   winston.warn('Permission denied to delete image:'+path);
-    //   return res.status(403).send({success: false, msg: 'Permission denied to delete image:'+path});
-    // }
+//     // TODO later if enabled there is problem when admin delete a bot image
+//     // if (path.indexOf("/"+req.user.id+"/")==-1) {
+//     //   winston.warn('Permission denied to delete image:'+path);
+//     //   return res.status(403).send({success: false, msg: 'Permission denied to delete image:'+path});
+//     // }
 
-    let filename = pathlib.basename(path);
-    winston.debug("filename:"+filename);
+//     let filename = pathlib.basename(path);
+//     winston.debug("filename:"+filename);
 
-    if (!filename) {
-      winston.warn('Error delete image. No filename specified:'+path);
-      return res.status(500).send({success: false, msg: 'Error delete image. No filename specified:'+path});
-    }
+//     if (!filename) {
+//       winston.warn('Error delete image. No filename specified:'+path);
+//       return res.status(500).send({success: false, msg: 'Error delete image. No filename specified:'+path});
+//     }
 
   
 
-    fileService.deleteFile(path).then(function(data) {
+//     fileService.deleteFile(path).then(function(data) {
 
-      let thumbFilename = 'thumbnails_200_200-'+filename;
-      winston.debug("thumbFilename:"+thumbFilename);
+//       let thumbFilename = 'thumbnails_200_200-'+filename;
+//       winston.debug("thumbFilename:"+thumbFilename);
 
-      let thumbPath = path.replace(filename,thumbFilename);
-      winston.debug("thumbPath:"+thumbPath);
+//       let thumbPath = path.replace(filename,thumbFilename);
+//       winston.debug("thumbPath:"+thumbPath);
 
-      fileService.deleteFile(thumbPath).then(function(data) {
-        winston.debug("thumbFilename deleted:"+thumbPath);
-      }).catch(function(error) {
-        winston.error('Error deleting thumbnail image.',error);
-      });
+//       fileService.deleteFile(thumbPath).then(function(data) {
+//         winston.debug("thumbFilename deleted:"+thumbPath);
+//       }).catch(function(error) {
+//         winston.error('Error deleting thumbnail image.',error);
+//       });
 
-      return res.status(200).json({
-          message: 'Image deleted successfully',
-          filename: encodeURIComponent(data.filename)
-      });
-    }).catch(function(error) {
-      winston.error('Error deleting image.',error);
-      return res.status(500).send({success: false, msg: 'Error deleting image.'});
-    });
+//       return res.status(200).json({
+//           message: 'Image deleted successfully',
+//           filename: encodeURIComponent(data.filename)
+//       });
+//     }).catch(function(error) {
+//       winston.error('Error deleting image.',error);
+//       return res.status(500).send({success: false, msg: 'Error deleting image.'});
+//     });
 
-  } catch (error) {
-    winston.error('Error deleting image.',error);
-    return res.status(500).send({success: false, msg: 'Error deleting image.'});
-  }
-});
+//   } catch (error) {
+//     winston.error('Error deleting image.',error);
+//     return res.status(500).send({success: false, msg: 'Error deleting image.'});
+//   }
+// });
 
 
 /*
@@ -352,42 +401,43 @@ curl -v -X POST -H 'Content-Type: multipart/form-data' -F "file=@/Users/andreale
 curl -v -X POST -H 'Content-Type: multipart/form-data' -F "file=@/Users/andrealeo/dev/chat21/tiledesk-server-dev-org/test.jpg" https://tiledesk-server-pre.herokuapp.com/images/public/
 */
 
-router.post('/public', upload.single('file'), (req, res, next) => {
-  try {
-     winston.debug("req",req);
-     var folder = req.folder || "error";
-     winston.debug("folder",folder);
+// DEPRECATED FROM VERSION 2.14.24
+// router.post('/public', upload.single('file'), (req, res, next) => {
+//   try {
+//      winston.debug("req",req);
+//      var folder = req.folder || "error";
+//      winston.debug("folder",folder);
 
-     var destinationFolder = "uploads/public/images/" + folder +"/";
-     winston.debug("destinationFolder",destinationFolder);
+//      var destinationFolder = "uploads/public/images/" + folder +"/";
+//      winston.debug("destinationFolder",destinationFolder);
 
-     winston.debug("req.file.filename",req.file.filename);
+//      winston.debug("req.file.filename",req.file.filename);
 
-     var thumFilename = destinationFolder+'thumbnails_200_200-' + req.file.originalname;          
-
-
-     fileService.getFileDataAsBuffer(req.file.filename).then(function(buffer) {
-
-        sharp(buffer).resize(200, 200).toBuffer((err, resizeImage, info) => {
-            if (err) { winston.error("Error generating thumbnail", err); }
-            fileService.createFile ( thumFilename, resizeImage, undefined, undefined);
-        });
+//      var thumFilename = destinationFolder+'thumbnails_200_200-' + req.file.originalname;          
 
 
-        return res.status(201).json({
-            message: 'Image uploded successfully',
-            filename: encodeURIComponent(req.file.filename),
-            thumbnail: encodeURIComponent(thumFilename)
-        });
-      });
+//      fileService.getFileDataAsBuffer(req.file.filename).then(function(buffer) {
+
+//         sharp(buffer).resize(200, 200).toBuffer((err, resizeImage, info) => {
+//             if (err) { winston.error("Error generating thumbnail", err); }
+//             fileService.createFile ( thumFilename, resizeImage, undefined, undefined);
+//         });
+
+
+//         return res.status(201).json({
+//             message: 'Image uploded successfully',
+//             filename: encodeURIComponent(req.file.filename),
+//             thumbnail: encodeURIComponent(thumFilename)
+//         });
+//       });
       
 
      
-  } catch (error) {
-    winston.error('Error deleting public image.',error);
-    return res.status(500).send({success: false, msg: 'Error deleting public image.'});
-  }
-});
+//   } catch (error) {
+//     winston.error('Error deleting public image.',error);
+//     return res.status(500).send({success: false, msg: 'Error deleting public image.'});
+//   }
+// });
 
 
 // router.use('/uploads', express.static(path.join(__dirname, '/uploads')));
@@ -422,10 +472,34 @@ router.get('/thumbnails', (req, res) => {
 })
 
 
-router.get("/", (req, res) => {
+// curl -X GET 'http://localhost:3000/images?path=123'
+router.get("/", async (req, res) => {
   winston.debug('path', req.query.path);
-  // try {
-    fileService.getFileDataAsStream(req.query.path).on('error', (e)=> {
+
+  if (req.query.as_attachment) {
+    res.set({ "Content-Disposition": "attachment; filename=\""+req.query.path+"\"" });
+
+  }
+
+
+  try {
+    let file = await fileService.find(req.query.path);
+    // console.log("file", file);
+
+    res.set({ "Content-Length": file.length});
+    res.set({ "Content-Type": file.contentType});
+
+  } catch (e) {
+    if (e.code == "ENOENT") {
+      winston.debug('Image not found: '+req.query.path);
+      return res.status(404).send({success: false, msg: 'Image not found.'});
+    }else {
+      winston.error('Error getting the image', e);
+      return res.status(500).send({success: false, msg: 'Error getting image.'});
+    }      
+  }
+
+  fileService.getFileDataAsStream(req.query.path).on('error', (e)=> {
       if (e.code == "ENOENT") {
         winston.debug('Image not found: '+req.query.path);
         return res.status(404).send({success: false, msg: 'Image not found.'});

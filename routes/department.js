@@ -14,6 +14,41 @@ var cacheUtil = require('../utils/cacheUtil');
 var departmentEvent = require("../event/departmentEvent");
 
 
+router.post('/', [passport.authenticate(['basic', 'jwt'], { session: false }), validtoken, roleChecker.hasRole('admin')], function (req, res) {
+
+  winston.debug("DEPT REQ BODY ", req.body);
+  var newDepartment = new Department({
+      routing: req.body.routing,
+      name: req.body.name,
+      description: req.body.description,
+      default: req.body.default,
+      status: req.body.status,
+      id_group: req.body.id_group,
+      groups: req.body.groups,
+      id_project: req.projectid,
+      createdBy: req.user.id,
+      updatedBy: req.user.id
+  });
+
+  if (req.body.id_bot) {
+      newDepartment.id_bot = req.body.id_bot;
+      newDepartment.bot_only = req.body.bot_only;
+  }
+
+
+  newDepartment.save(function (err, savedDepartment) {
+      if (err) {
+      winston.error('Error creating the department ', err);
+      return res.status(500).send({ success: false, msg: 'Error saving object.' });
+      }
+      winston.debug('NEW DEPT SAVED ', savedDepartment);
+      departmentEvent.emit('department.create', savedDepartment);
+      res.json(savedDepartment);
+  });
+});
+
+
+
 router.put('/:departmentid', [passport.authenticate(['basic', 'jwt'], { session: false }), validtoken, roleChecker.hasRole('admin')], function (req, res) {
 
   winston.debug(req.body);
@@ -45,7 +80,9 @@ router.put('/:departmentid', [passport.authenticate(['basic', 'jwt'], { session:
   if (req.body.status!=undefined) {
       update.status = req.body.status;
   }
-  
+  if (req.body.groups!=undefined) {
+    update.groups = req.body.groups;
+  }      
 
 
   Department.findByIdAndUpdate(req.params.departmentid, update, { new: true, upsert: true }, function (err, updatedDepartment) {
@@ -87,6 +124,9 @@ router.put('/:departmentid', [passport.authenticate(['basic', 'jwt'], { session:
     if (req.body.id_group!=undefined) {
         update.id_group = req.body.id_group;
     }    
+    if (req.body.groups!=undefined) {
+      update.groups = req.body.groups;
+    }      
   
   
     Department.findByIdAndUpdate(req.params.departmentid, update, { new: true, upsert: true }, function (err, updatedDepartment) {
@@ -117,12 +157,11 @@ router.get('/:departmentid/operators', [passport.authenticate(['basic', 'jwt'], 
 
 
     var context = {req:req};
-  var operatorsResult = await departmentService.getOperators(req.params.departmentid, req.projectid, req.query.nobot, disableWebHookCall, context);
-  winston.debug("Getting department operators operatorsResult", operatorsResult);
+    var operatorsResult = await departmentService.getOperators(req.params.departmentid, req.projectid, req.query.nobot, disableWebHookCall, context);
+    winston.debug("Getting department operators operatorsResult", operatorsResult);
 
-
-  
-    return res.json(operatorsResult);
+    delete operatorsResult.context;
+    return res.status(200).send(operatorsResult);
 
 });
 
@@ -141,7 +180,8 @@ router.get('/allstatus', [passport.authenticate(['basic', 'jwt'], { session: fal
 
   winston.debug("## GET ALL DEPTS req.project ", req.project)
 
-  var query = { "id_project": req.projectid };
+  var query = { "id_project": req.projectid, status: { $gte:  0 } }; // nascondi quelli con status = hidden (-1) for dashboard
+                                            //secondo me qui manca un parentesi tonda per gli or
   if (req.project && req.project.profile && (req.project.profile.type === 'free' && req.project.trialExpired === true) || (req.project.profile.type === 'payment' && req.project.isActiveSubscription === false)) {
 
     query.default = true;
@@ -166,7 +206,7 @@ router.get('/allstatus', [passport.authenticate(['basic', 'jwt'], { session: fal
     winston.debug("## GET ALL DEPTS QUERY (1)", query)
     // return Department.find({ "id_project": req.projectid }, function (err, departments) {
     return Department.find(query)
-    .cache(cacheUtil.defaultTTL, req.projectid+":departments:query:allstatus")
+    //@DISABLED_CACHE .cache(cacheUtil.defaultTTL, req.projectid+":departments:query:allstatus")
     .exec(function (err, departments) {
       if (err) {
         winston.error('Error getting the departments.', err);
@@ -236,7 +276,7 @@ router.get('/', function (req, res) {
   winston.debug('GET DEPTS FILTERED FOR STATUS === 1 req.project.profile.type ',  req.project.trialExpired);
   winston.debug('GET DEPTS FILTERED FOR STATUS === 1 req.project.isActiveSubscription ',  req.project.isActiveSubscription);
   
-
+                                            //secondo me qui manca un parentesi tonda per gli or
   if (req.project && req.project.profile && (req.project.profile.type === 'free' && req.project.trialExpired === true) || (req.project.profile.type === 'payment' && req.project.isActiveSubscription === false)) {
 
     query.default = true;
@@ -265,6 +305,23 @@ router.get('/', function (req, res) {
   }
 });
 
+router.delete('/:departmentid', [passport.authenticate(['basic', 'jwt'], { session: false }), validtoken, roleChecker.hasRole('admin')], function (req, res) {
+
+  winston.debug(req.body);
+  winston.debug("req.params.departmentid: "+req.params.departmentid);
+
+  Department.findOneAndRemove({_id: req.params.departmentid}, function (err, department) {
+  // Department.remove({ _id: req.params.departmentid }, function (err, department) {
+      
+      if (err) {
+      winston.error('Error deleting the department ', err);
+      return res.status(500).send({ success: false, msg: 'Error deleting object.' });
+      }
+      // nn funziuona perchje nn c'è id_project
+      departmentEvent.emit('department.delete', department);
+      res.json(department);
+  });
+});
 
 
 module.exports = router;
